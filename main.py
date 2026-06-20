@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import logging
+import mimetypes
 import os
 import re
 import sys
@@ -43,7 +44,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 DEFAULT_ADMIN_ID = 123456789
 MAX_BOT_MESSAGE = 3900
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{5,32}$")
 ID_WITH_HASH_RE = re.compile(r"^(?:id:)?(?P<id>-?\d+)\s*:\s*(?P<hash>-?\d+)$", re.IGNORECASE)
@@ -103,6 +104,7 @@ class AppConfig:
 class SnapshotBundle:
     snapshot: dict[str, Any]
     photo_objects: dict[str, Any]
+    music_document: Any | None = None
 
 
 @dataclass
@@ -543,12 +545,32 @@ def document_summary(document: Any) -> dict[str, Any] | None:
         return None
     attrs = []
     alt = None
+    title = None
+    performer = None
+    duration = None
+    voice = None
+    file_name = None
     for attr in getattr(document, "attributes", []) or []:
         attr_name = attr.__class__.__name__
         attr_data = {"type": attr_name}
         if hasattr(attr, "alt"):
             alt = getattr(attr, "alt")
             attr_data["alt"] = alt
+        if hasattr(attr, "duration"):
+            duration = getattr(attr, "duration")
+            attr_data["duration"] = duration
+        if hasattr(attr, "voice"):
+            voice = bool(getattr(attr, "voice"))
+            attr_data["voice"] = voice
+        if hasattr(attr, "title"):
+            title = getattr(attr, "title")
+            attr_data["title"] = title
+        if hasattr(attr, "performer"):
+            performer = getattr(attr, "performer")
+            attr_data["performer"] = performer
+        if hasattr(attr, "file_name"):
+            file_name = getattr(attr, "file_name")
+            attr_data["file_name"] = file_name
         if hasattr(attr, "stickerset"):
             attr_data["stickerset"] = tl_to_plain(getattr(attr, "stickerset"))
         attrs.append(attr_data)
@@ -559,6 +581,11 @@ def document_summary(document: Any) -> dict[str, Any] | None:
         "size": getattr(document, "size", None),
         "dc_id": getattr(document, "dc_id", None),
         "alt": alt,
+        "title": title,
+        "performer": performer,
+        "duration": duration,
+        "voice": voice,
+        "file_name": file_name,
         "attributes": attrs,
     }
 
@@ -1188,6 +1215,7 @@ class ProfileReader:
         )
         photos = list(getattr(photos_result, "photos", []) or [])
         photo_objects = {str(getattr(photo, "id", "")): photo for photo in photos}
+        music_document = getattr(full_user, "saved_music", None)
 
         gifts = await self._read_gifts(user, user_map, chat_map)
         profile = normalize_profile(user, full_user, chat_map, self.config.monitor.track_online_status)
@@ -1220,7 +1248,7 @@ class ProfileReader:
                 "chats": tl_to_plain(getattr(full_result, "chats", [])),
             },
         }
-        return SnapshotBundle(snapshot=snapshot, photo_objects=photo_objects)
+        return SnapshotBundle(snapshot=snapshot, photo_objects=photo_objects, music_document=music_document)
 
     async def _resolve_target(self, target: str) -> Any:
         target = target.strip()
@@ -1628,6 +1656,107 @@ def code_text(value: Any, limit: int = 500) -> str:
     return f"<code>{html_escape(one_line(value, limit))}</code>"
 
 
+def format_duration(value: Any) -> str:
+    if value is None:
+        return "нет"
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return one_line(value, 40)
+    if seconds < 0:
+        return str(seconds)
+    minutes, rest = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{rest:02d}"
+    return f"{minutes}:{rest:02d}"
+
+
+def format_file_size(value: Any) -> str:
+    if value is None:
+        return "нет"
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return one_line(value, 40)
+    units = ("B", "KB", "MB", "GB")
+    amount = float(size)
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount)} {unit}"
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{size} B"
+
+
+def music_title(music: dict[str, Any] | None) -> str:
+    if not music:
+        return "нет"
+    title = music.get("title")
+    performer = music.get("performer")
+    file_name = music.get("file_name")
+    alt = music.get("alt")
+    parts = [str(item).strip() for item in (performer, title) if str(item or "").strip()]
+    if parts:
+        return " - ".join(parts)
+    if file_name:
+        return str(file_name)
+    if alt:
+        return str(alt)
+    if music.get("id"):
+        return f"document {music.get('id')}"
+    return "без названия"
+
+
+def format_music_html(music: dict[str, Any] | None, label: str = "Музыка профиля") -> str:
+    if not music:
+        return f"<b>{html_escape(label)}:</b> {code_text('нет')}"
+
+    lines = [f"<b>{html_escape(label)}:</b> {code_text(music_title(music), 300)}"]
+    if music.get("duration") is not None:
+        lines.append(f"<b>Длительность:</b> {code_text(format_duration(music.get('duration')))}")
+    if music.get("file_name"):
+        lines.append(f"<b>Файл:</b> {code_text(music.get('file_name'), 220)}")
+    if music.get("size") is not None:
+        lines.append(f"<b>Размер:</b> {code_text(format_file_size(music.get('size')))}")
+    if music.get("mime_type"):
+        lines.append(f"<b>MIME:</b> {code_text(music.get('mime_type'), 80)}")
+    if music.get("id"):
+        lines.append(f"<b>Document ID:</b> {code_text(music.get('id'), 80)}")
+    return "\n".join(lines)
+
+
+def music_caption(snapshot: dict[str, Any]) -> str:
+    music = snapshot.get("profile", {}).get("saved_music")
+    lines = [
+        "<b>Музыка профиля</b>",
+        target_header(snapshot),
+    ]
+    if music:
+        lines.append(f"трек: {code_text(music_title(music), 220)}")
+        if music.get("duration") is not None:
+            lines.append(f"длительность: {code_text(format_duration(music.get('duration')))}")
+    return "\n".join(lines)
+
+
+def music_file_extension(music: dict[str, Any] | None) -> str:
+    if not music:
+        return ""
+    file_name = str(music.get("file_name") or "")
+    suffix = Path(file_name).suffix.lower()
+    if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+        return suffix
+    mime_type = music.get("mime_type")
+    if mime_type:
+        return mimetypes.guess_extension(str(mime_type)) or ""
+    return ""
+
+
+def has_saved_music_change(diff: dict[str, Any]) -> bool:
+    return any(change.get("path") == "saved_music" for change in diff.get("profile_changes", []))
+
+
 def html_attr(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -1761,6 +1890,12 @@ def format_pretty_profile_change(change: dict[str, Any]) -> str | None:
             f"было:\n{format_work_hours_html(change['old'])}\n"
             f"стало:\n{format_work_hours_html(change['new'])}"
         )
+    if path == "saved_music":
+        return (
+            f"<b>{label}</b>:\n"
+            f"было:\n{format_music_html(change['old'])}\n"
+            f"стало:\n{format_music_html(change['new'])}"
+        )
     return None
 
 
@@ -1842,6 +1977,7 @@ def format_snapshot_summary(snapshot: dict[str, Any], title: str = "Снимок
         f"<b>Premium:</b> {code_text('да' if profile.get('premium') else 'нет')}",
         f"<b>Emoji status:</b> {emoji_status_html(profile.get('emoji_status'))}",
         f"<b>Описание:</b> {code_text(profile.get('bio') or 'нет', 500)}",
+        format_music_html(profile.get("saved_music")),
         format_channel_html(profile.get("personal_channel")),
         format_work_hours_html(profile.get("business_work_hours")),
         f"<b>Аватарок видно:</b> <code>{html_escape(photos.get('count'))}</code>",
@@ -1964,6 +2100,7 @@ class ProfileMonitor:
                 )
                 if self.config.monitor.notify_initial_snapshot or manual:
                     await self.send_admin_text(format_snapshot_summary(snapshot, "Первый снимок сохранен"))
+                    await self.send_profile_music(snapshot, bundle.music_document)
                 return CheckResult(
                     target=target,
                     ok=True,
@@ -1985,7 +2122,7 @@ class ProfileMonitor:
                         "snapshot": snapshot,
                     }
                 )
-                await self.notify_diff(snapshot, diff, bundle.photo_objects)
+                await self.notify_diff(snapshot, diff, bundle.photo_objects, bundle.music_document)
             elif notify_no_changes:
                 await self.send_admin_text(
                     f"<b>Без изменений</b>\n{target_header(snapshot)}\nснимок: <code>{html_escape(snapshot.get('taken_at'))}</code>"
@@ -2018,8 +2155,17 @@ class ProfileMonitor:
             await self.send_admin_text(f"<b>Ошибка проверки профиля</b>\n<code>{html_escape(target)}</code>\n<code>{html_escape(error)}</code>")
             return CheckResult(target=target, ok=False, error=error)
 
-    async def notify_diff(self, snapshot: dict[str, Any], diff: dict[str, Any], photo_objects: dict[str, Any]) -> None:
+    async def notify_diff(
+        self,
+        snapshot: dict[str, Any],
+        diff: dict[str, Any],
+        photo_objects: dict[str, Any],
+        music_document: Any | None,
+    ) -> None:
         await self.send_admin_text(format_diff(snapshot, diff))
+        if has_saved_music_change(diff):
+            await self.send_profile_music(snapshot, music_document)
+
         if not self.config.monitor.send_photos or self.config.monitor.max_photos_per_event <= 0:
             return
 
@@ -2058,6 +2204,50 @@ class ProfileMonitor:
             raise RuntimeError("Telethon не вернул путь к скачанной аватарке.")
         return Path(result)
 
+    async def send_profile_music(self, snapshot: dict[str, Any], music_document: Any | None) -> None:
+        music = snapshot.get("profile", {}).get("saved_music")
+        if not music:
+            return
+        if music_document is None:
+            await self.send_admin_text(
+                "<b>Музыка профиля есть, но файл недоступен</b>\n"
+                f"{target_header(snapshot)}\n"
+                f"{format_music_html(music)}"
+            )
+            return
+
+        try:
+            path = await self.download_music(snapshot, music_document)
+            await self.send_admin_audio(path, music_caption(snapshot), music)
+        except Exception as exc:
+            logging.exception("Failed to send profile music")
+            await self.send_admin_text(
+                "<b>Не удалось отправить музыку профиля</b>\n"
+                f"{target_header(snapshot)}\n"
+                f"{format_music_html(music)}\n"
+                f"<code>{html_escape(type(exc).__name__)}: {html_escape(exc)}</code>"
+            )
+
+    async def download_music(self, snapshot: dict[str, Any], music_document: Any) -> Path:
+        profile_id = str(snapshot["identity"]["id"])
+        music = snapshot.get("profile", {}).get("saved_music") or {}
+        document_id = str(music.get("id") or getattr(music_document, "id", "music"))
+        target_dir = self.config.monitor.media_dir / profile_id / "music"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        exact_path = target_dir / f"music_{document_id}"
+        if exact_path.exists():
+            return exact_path
+        existing = list(target_dir.glob(f"music_{document_id}.*"))
+        if existing:
+            return existing[0]
+
+        extension = music_file_extension(music)
+        result = await self.client.download_media(music_document, file=str(target_dir / f"music_{document_id}{extension}"))
+        if not result:
+            raise RuntimeError("Telethon не вернул путь к скачанной музыке.")
+        return Path(result)
+
     async def send_admin_text(self, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
         chunks = split_message(text)
         for index, chunk in enumerate(chunks):
@@ -2078,6 +2268,31 @@ class ProfileMonitor:
                 await self.bot.send_photo(admin_id, FSInputFile(path), caption=caption)
             except TelegramAPIError:
                 logging.exception("Failed to send photo to admin %s", admin_id)
+
+    async def send_admin_audio(self, path: Path, caption: str, music: dict[str, Any]) -> None:
+        duration = None
+        try:
+            if music.get("duration") is not None:
+                duration = int(music["duration"])
+        except (TypeError, ValueError):
+            duration = None
+
+        for admin_id in self.config.bot.admin_ids:
+            try:
+                await self.bot.send_audio(
+                    admin_id,
+                    FSInputFile(path),
+                    caption=caption,
+                    title=music.get("title") or None,
+                    performer=music.get("performer") or None,
+                    duration=duration,
+                )
+            except TelegramAPIError:
+                logging.exception("Failed to send audio to admin %s, trying document", admin_id)
+                try:
+                    await self.bot.send_document(admin_id, FSInputFile(path), caption=caption)
+                except TelegramAPIError:
+                    logging.exception("Failed to send music document to admin %s", admin_id)
 
     def status_text(self) -> str:
         running = "идет проверка" if self.lock.locked() else "ожидает"
