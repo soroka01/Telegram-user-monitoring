@@ -477,6 +477,13 @@ def strip_volatile(value: Any) -> Any:
     return value
 
 
+def profile_compare_value(path: str, value: Any) -> Any:
+    value = strip_volatile(value)
+    if path == "personal_channel" and isinstance(value, dict):
+        return {key: item for key, item in value.items() if key not in {"message_id", "link"}}
+    return value
+
+
 def tl_to_plain(value: Any, depth: int = 0) -> Any:
     if depth > 8:
         return repr(value)
@@ -1465,8 +1472,8 @@ def diff_snapshots(previous: dict[str, Any], current: dict[str, Any]) -> dict[st
     profile_changes = []
 
     for path in sorted(set(old_profile) | set(new_profile)):
-        old_value = strip_volatile(old_profile.get(path))
-        new_value = strip_volatile(new_profile.get(path))
+        old_value = profile_compare_value(path, old_profile.get(path))
+        new_value = profile_compare_value(path, new_profile.get(path))
         if old_value != new_value:
             profile_changes.append(
                 {
@@ -1768,8 +1775,6 @@ def format_channel_html(channel: dict[str, Any] | None) -> str:
     title = channel.get("title")
     username = channel.get("username")
     channel_id = channel.get("id")
-    message_id = channel.get("message_id")
-    link = channel.get("link")
 
     parts = []
     if title:
@@ -1780,11 +1785,6 @@ def format_channel_html(channel: dict[str, Any] | None) -> str:
         parts.append(f"id {code_text(channel_id)}")
 
     lines = [f"<b>Канал:</b> {' '.join(parts) if parts else code_text(channel, 260)}"]
-    if link:
-        display_link = str(link).replace("https://", "")
-        lines.append(f'<b>Пост канала:</b> <a href="{html_attr(link)}">{html_escape(display_link)}</a>')
-    elif message_id is not None:
-        lines.append(f"<b>Пост канала:</b> {code_text(message_id)}")
     if channel_id is not None:
         lines.append(f"<b>ID канала:</b> {code_text(channel_id)}")
     return "\n".join(lines)
