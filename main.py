@@ -43,7 +43,7 @@ from telethon.errors import (
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 DEFAULT_ADMIN_ID = 123456789
-MAX_BOT_MESSAGE = 3900
+MAX_BOT_MESSAGE = 4096
 SCHEMA_VERSION = 2
 
 USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{5,32}$")
