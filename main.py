@@ -1520,6 +1520,26 @@ def target_header(snapshot: dict[str, Any]) -> str:
     return f'{html_escape(display)} <code>{html_escape(identity.get("id"))}</code>'
 
 
+def target_ref_html(target: Any) -> str:
+    text = str(target or "").strip()
+    if not text:
+        return "<code>unknown</code>"
+
+    if text.startswith("https://t.me/") or text.startswith("http://t.me/"):
+        username = text.rstrip("/").rsplit("/", 1)[-1]
+        return f'<a href="{html_attr(text)}">@{html_escape(username.lstrip("@"))}</a>'
+
+    if text.startswith("t.me/"):
+        username = text.rstrip("/").rsplit("/", 1)[-1]
+        return f'<a href="{html_attr("https://" + text)}">@{html_escape(username.lstrip("@"))}</a>'
+
+    if USERNAME_RE.match(text) and not text.lstrip("@").isdigit():
+        username = text.lstrip("@")
+        return f'<a href="https://t.me/{html_attr(username)}">@{html_escape(username)}</a>'
+
+    return f"<code>{html_escape(text)}</code>"
+
+
 def format_msk_datetime(value: Any) -> str:
     if not value:
         return "нет"
@@ -1891,7 +1911,7 @@ class ProfileMonitor:
         self.stop_event.set()
 
     def startup_text(self) -> str:
-        targets = "\n".join(f"• <code>{html_escape(target)}</code>" for target in self.config.monitor.targets)
+        targets = "\n".join(f"• {target_ref_html(target)}" for target in self.config.monitor.targets)
         return (
             "<b>User Monitor запущен</b>\n"
             f"Интервал: <code>{self.config.monitor.interval_seconds} сек</code>\n"
@@ -2084,7 +2104,7 @@ class ProfileMonitor:
             indexed = self.store.indexed_target(target) or {}
             display = indexed.get("display") or "пока не снят"
             profile_id = indexed.get("id") or "нет"
-            lines.append(f"• <code>{html_escape(target)}</code> -&gt; {html_escape(display)} <code>{html_escape(profile_id)}</code>")
+            lines.append(f"• {target_ref_html(target)} -&gt; {html_escape(display)} <code>{html_escape(profile_id)}</code>")
 
         profiles = self.store.all_profiles()
         if profiles:
