@@ -1,3 +1,4 @@
 aiogram>=3.20
 telethon>=1.43
 qrcode[pil]>=7.4
+tzdata>=2025.2

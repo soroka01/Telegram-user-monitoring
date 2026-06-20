@@ -57,6 +57,7 @@ if not exist "config.json" (
 echo [SETUP] Installing dependencies into .venv...
 set "NO_PROXY=*"
 set "no_proxy=*"
+set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 "%PYTHON_CMD%" -m pip install -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed.
@@ -65,6 +66,7 @@ if errorlevel 1 (
 )
 set "NO_PROXY="
 set "no_proxy="
+set "PIP_DISABLE_PIP_VERSION_CHECK="
 
 echo Starting monitor...
 echo.
