@@ -1,0 +1,13 @@
+config.json
+*.session
+*.session-journal
+.venv/
+venv/
+env/
+state/
+logs/
+media/
+__pycache__/
+*.pyc
+profile_state.json
+/media/*

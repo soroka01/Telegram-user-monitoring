@@ -1,0 +1,34 @@
+{
+  "telegram": {
+    "api_id": "PUT_API_ID_HERE",
+    "api_hash": "PUT_API_HASH_HERE",
+    "phone": "+79990000000",
+    "session_name": "user_monitor_account",
+    "qr_login_attempts": 10,
+    "qr_login_timeout_seconds": 55
+  },
+  "bot": {
+    "token": "PUT_BOT_TOKEN_HERE",
+    "admin_ids": [
+      123456789
+    ]
+  },
+  "monitor": {
+    "targets": [
+      "@username",
+      "123456789"
+    ],
+    "interval_seconds": 300,
+    "request_delay_seconds": 1.0,
+    "profile_photo_limit": 20,
+    "gift_limit": 200,
+    "max_photos_per_event": 5,
+    "send_photos": true,
+    "notify_initial_snapshot": true,
+    "track_online_status": false,
+    "timezone": "Asia/Yekaterinburg",
+    "state_path": "state/profile_state.json",
+    "events_path": "logs/profile_events.jsonl",
+    "media_dir": "media"
+  }
+}
