@@ -1857,14 +1857,13 @@ def format_work_hours_html(work_hours: dict[str, Any] | None) -> str:
 def format_snapshot_gifts(snapshot: dict[str, Any]) -> str:
     gifts = snapshot.get("gifts", {})
     items = gifts.get("items") or []
-    lines = [
-        "",
-        f"<b>Текущие подарки профиля: {len(items)}</b>",
-    ]
+    if not items and gifts.get("available", True):
+        return ""
+
+    lines = ["", f"<b>Текущие подарки профиля: {len(items)}</b>"]
     if not gifts.get("available", True):
         lines.append(f"<b>Подарки API:</b> <code>{html_escape(gifts.get('error') or 'недоступно')}</code>")
     if not items:
-        lines.append("нет видимых подарков")
         return "\n".join(lines)
 
     for gift in items:
@@ -1965,6 +1964,10 @@ def format_snapshot_summary(snapshot: dict[str, Any], title: str = "Снимок
     gifts = snapshot.get("gifts", {})
     photos = snapshot.get("photos", {})
     username = profile.get("username")
+    gift_items = gifts.get("items") or []
+    stargifts_count = profile.get("stargifts_count")
+    listed_count = gifts.get("listed_count")
+    visible_count = gifts.get("visible_count")
 
     lines = [
         f"<b>{html_escape(title)}</b>",
@@ -1981,12 +1984,27 @@ def format_snapshot_summary(snapshot: dict[str, Any], title: str = "Снимок
         format_channel_html(profile.get("personal_channel")),
         format_work_hours_html(profile.get("business_work_hours")),
         f"<b>Аватарок видно:</b> <code>{html_escape(photos.get('count'))}</code>",
-        f"<b>Подарков в full profile:</b> <code>{html_escape(profile.get('stargifts_count'))}</code>",
-        f"<b>Подарков прочитано:</b> <code>{html_escape(gifts.get('listed_count'))}</code> из <code>{html_escape(gifts.get('visible_count'))}</code>",
     ]
+    if gift_items:
+        lines.extend(
+            [
+                f"<b>Подарков в full profile:</b> <code>{html_escape(stargifts_count)}</code>",
+                f"<b>Подарков прочитано:</b> <code>{html_escape(listed_count)}</code> из <code>{html_escape(visible_count)}</code>",
+            ]
+        )
+    else:
+        if any(value not in (None, 0) for value in (stargifts_count, listed_count, visible_count)):
+            lines.append(
+                f"<b>Подарки:</b> видимых нет, full profile: <code>{html_escape(stargifts_count)}</code>, "
+                f"прочитано <code>{html_escape(listed_count)}</code> из <code>{html_escape(visible_count)}</code>"
+            )
+        else:
+            lines.append("<b>Подарки:</b> <code>нет видимых</code>")
     if gifts.get("error"):
         lines.append(f"<b>Подарки API:</b> <code>{html_escape(gifts['error'])}</code>")
-    lines.append(format_snapshot_gifts(snapshot))
+    gift_details = format_snapshot_gifts(snapshot)
+    if gift_details:
+        lines.append(gift_details)
     return "\n".join(lines)
 
 
