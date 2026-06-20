@@ -54,13 +54,13 @@
 ## Запуск
 
 ```bat
-user_monitor\start.bat
+Telegram-user-monitoring\start.bat
 ```
 
 Или вручную:
 
 ```powershell
-cd user_monitor
+cd Telegram-user-monitoring
 python -m pip install -r requirements.txt
 python main.py
 ```
