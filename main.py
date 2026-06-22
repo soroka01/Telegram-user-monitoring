@@ -481,6 +481,8 @@ def profile_compare_value(path: str, value: Any) -> Any:
     value = strip_volatile(value)
     if path == "personal_channel" and isinstance(value, dict):
         return {key: item for key, item in value.items() if key not in {"message_id", "link"}}
+    if path == "business_work_hours" and isinstance(value, dict):
+        return {key: item for key, item in value.items() if key != "open_now"}
     return value
 
 
@@ -1442,9 +1444,9 @@ FIELD_LABELS = {
     "send_paid_messages_stars": "цена платных сообщений",
     "common_chats_count": "общие чаты",
     "current_photo": "текущая аватарка",
-    "profile_photo": "profile photo",
-    "personal_photo": "personal photo",
-    "fallback_photo": "fallback photo",
+    "profile_photo": "аватарка профиля",
+    "personal_photo": "персональная аватарка",
+    "fallback_photo": "запасная аватарка",
     "flags": "флаги профиля",
     "online_status": "онлайн-статус",
 }
@@ -1849,8 +1851,6 @@ def format_work_hours_html(work_hours: dict[str, Any] | None) -> str:
     timezone_id = work_hours.get("timezone_id")
     if timezone_id:
         lines.append(f"<b>Часовой пояс:</b> {code_text(timezone_id)}")
-    if "open_now" in work_hours:
-        lines.append(f"<b>Сейчас:</b> {code_text('открыто' if work_hours.get('open_now') else 'закрыто')}")
     return "\n".join(lines)
 
 
@@ -1872,11 +1872,120 @@ def format_snapshot_gifts(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def photo_id(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    photo_id_value = value.get("id")
+    return str(photo_id_value) if photo_id_value is not None else None
+
+
+def photo_change_key(change: dict[str, Any]) -> tuple[str | None, str | None]:
+    return photo_id(change.get("old")), photo_id(change.get("new"))
+
+
+def profile_changes_for_display(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    current_photo_keys = {
+        photo_change_key(change)
+        for change in changes
+        if change.get("path") == "current_photo"
+    }
+    visible = []
+    for change in changes:
+        if change.get("path") == "profile_photo" and photo_change_key(change) in current_photo_keys:
+            continue
+        visible.append(change)
+    return visible
+
+
+def photo_ref_html(value: Any) -> str:
+    if not value:
+        return code_text("нет")
+    if not isinstance(value, dict):
+        return code_text(value, 180)
+
+    parts = []
+    if value.get("id"):
+        parts.append(f"id {value['id']}")
+    if value.get("has_video"):
+        parts.append("видео")
+    if value.get("personal"):
+        parts.append("personal")
+    if value.get("dc_id") is not None:
+        parts.append(f"dc {value['dc_id']}")
+    return code_text(", ".join(parts) if parts else value, 220)
+
+
+def format_photo_change(change: dict[str, Any]) -> str:
+    return (
+        f"<b>{html_escape(change['label'])}</b>: "
+        f"{photo_ref_html(change.get('old'))} -&gt; {photo_ref_html(change.get('new'))}"
+    )
+
+
+def color_part(value: Any, key: str) -> Any:
+    if not isinstance(value, dict):
+        return None
+    return value.get(key)
+
+
+def format_peer_color_change(change: dict[str, Any]) -> str:
+    old = change.get("old")
+    new = change.get("new")
+    lines = [f"<b>{html_escape(change['label'])}</b>:"]
+
+    old_color = color_part(old, "color")
+    new_color = color_part(new, "color")
+    if old_color != new_color:
+        lines.append(f"цвет: {code_text(old_color)} -&gt; {code_text(new_color)}")
+
+    old_emoji = color_part(old, "background_emoji_id")
+    new_emoji = color_part(new, "background_emoji_id")
+    if old_emoji != new_emoji:
+        lines.append(f"фон emoji id: {code_text(old_emoji)} -&gt; {code_text(new_emoji)}")
+
+    if len(lines) == 1:
+        lines.append(f"{format_value(old)} -&gt; {format_value(new)}")
+    return "\n".join(lines)
+
+
+def rating_part(value: Any, key: str) -> Any:
+    if not isinstance(value, dict):
+        return None
+    return value.get(key)
+
+
+def format_stars_rating_change(change: dict[str, Any]) -> str:
+    old = change.get("old")
+    new = change.get("new")
+    labels = {
+        "stars": "stars",
+        "level": "уровень",
+        "current_level_stars": "звезд на уровне",
+        "next_level_stars": "следующий уровень",
+    }
+    lines = [f"<b>{html_escape(change['label'])}</b>:"]
+    for key, label in labels.items():
+        old_value = rating_part(old, key)
+        new_value = rating_part(new, key)
+        if old_value != new_value:
+            lines.append(f"{label}: {code_text(old_value)} -&gt; {code_text(new_value)}")
+
+    if len(lines) == 1:
+        lines.append(f"{format_value(old)} -&gt; {format_value(new)}")
+    return "\n".join(lines)
+
+
 def format_pretty_profile_change(change: dict[str, Any]) -> str | None:
     label = html_escape(change["label"])
     path = change["path"]
     if path == "emoji_status":
         return f"<b>{label}</b>: {emoji_status_html(change['old'])} -&gt; {emoji_status_html(change['new'])}"
+    if path in {"current_photo", "profile_photo", "personal_photo", "fallback_photo"}:
+        return format_photo_change(change)
+    if path in {"profile_color", "name_color"}:
+        return format_peer_color_change(change)
+    if path == "stars_rating":
+        return format_stars_rating_change(change)
     if path == "personal_channel":
         return (
             f"<b>{label}</b>:\n"
@@ -1906,7 +2015,8 @@ def format_diff(snapshot: dict[str, Any], diff: dict[str, Any]) -> str:
         "",
     ]
 
-    for change in diff.get("profile_changes", [])[:30]:
+    profile_changes = profile_changes_for_display(diff.get("profile_changes", []))
+    for change in profile_changes[:30]:
         pretty_change = format_pretty_profile_change(change)
         if pretty_change:
             lines.append(pretty_change)
@@ -1916,7 +2026,7 @@ def format_diff(snapshot: dict[str, Any], diff: dict[str, Any]) -> str:
                 f"<b>{html_escape(label)}</b>: "
                 f"{format_value(change['old'])} -&gt; {format_value(change['new'])}"
             )
-    hidden_profile_changes = max(0, len(diff.get("profile_changes", [])) - 30)
+    hidden_profile_changes = max(0, len(profile_changes) - 30)
     if hidden_profile_changes:
         lines.append(f"Еще изменений полей: <b>{hidden_profile_changes}</b>. Полный JSON есть в events log.")
 
