@@ -460,6 +460,7 @@ VOLATILE_COMPARE_KEYS = {
     "offer_min_stars",
     "resell_min_stars",
     "availability_resale",
+    "upgrade_stars",
 }
 
 
