@@ -1192,7 +1192,16 @@ class StateStore:
         self.save()
 
     def indexed_target(self, target: str) -> dict[str, Any] | None:
-        return self.data.get("target_index", {}).get(target)
+        index = self.data.get("target_index", {})
+        indexed = index.get(target)
+        if indexed is not None:
+            return indexed
+
+        normalized = target.strip().lstrip("@").lower()
+        for saved_target, saved_indexed in index.items():
+            if str(saved_target).strip().lstrip("@").lower() == normalized:
+                return saved_indexed
+        return None
 
     def find_profile(self, query: str) -> dict[str, Any] | None:
         normalized = query.strip().lstrip("@").lower()
@@ -2290,13 +2299,25 @@ class ProfileMonitor:
         self.stop_event.set()
 
     def startup_text(self) -> str:
-        targets = "\n".join(f"• {target_ref_html(target)}" for target in self.config.monitor.targets)
+        targets = "\n".join(self.startup_target_line(target) for target in self.config.monitor.targets)
         return (
             "<b>User Monitor запущен</b>\n"
             f"Интервал: <code>{self.config.monitor.interval_seconds} сек</code>\n"
             f"Целей: <code>{len(self.config.monitor.targets)}</code>\n\n"
             f"{targets}"
         )
+
+    def startup_target_line(self, target: str) -> str:
+        line = f"• {target_ref_html(target)}"
+        indexed = self.store.indexed_target(target) or {}
+        profile_id = indexed.get("id")
+        if profile_id is None:
+            return line
+
+        target_text = str(target).strip()
+        if target_text.lstrip("-").isdigit() and target_text == str(profile_id):
+            return line
+        return f"{line} id: <code>{html_escape(profile_id)}</code>"
 
     async def run_once(
         self,
