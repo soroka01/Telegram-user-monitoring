@@ -1107,6 +1107,7 @@ class StateStore:
     def __init__(self, path: Path, events_path: Path) -> None:
         self.path = path
         self.events_path = events_path
+        self.account_events_dir = events_path.parent / "accounts"
         self.data = self._load()
 
     @staticmethod
@@ -1154,8 +1155,25 @@ class StateStore:
     def append_event(self, event: dict[str, Any]) -> None:
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         event.setdefault("created_at", utc_now_iso())
+        payload = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
         with self.events_path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+            file.write(payload)
+
+        profile_id = self.event_profile_id(event)
+        if profile_id:
+            account_dir = self.account_events_dir / profile_id
+            account_dir.mkdir(parents=True, exist_ok=True)
+            with (account_dir / self.events_path.name).open("a", encoding="utf-8") as file:
+                file.write(payload)
+
+    @staticmethod
+    def event_profile_id(event: dict[str, Any]) -> str | None:
+        profile_id = event.get("profile_id")
+        if profile_id is None:
+            profile_id = event.get("snapshot", {}).get("identity", {}).get("id")
+        if profile_id is None:
+            return None
+        return re.sub(r"[^0-9A-Za-z_-]+", "_", str(profile_id)).strip("_") or None
 
     def profile(self, profile_id: str) -> dict[str, Any] | None:
         return self.data.get("profiles", {}).get(str(profile_id))
@@ -1422,7 +1440,7 @@ FIELD_LABELS = {
     "first_name": "имя",
     "last_name": "фамилия",
     "username": "основной @username",
-    "public_usernames": "публичные username",
+    "public_usernames": "публичные @username",
     "premium": "Premium",
     "emoji_status": "премиум emoji-статус",
     "bio": "описание",
@@ -1664,6 +1682,98 @@ def format_gift(gift: dict[str, Any], prefix: str = "Подарок") -> str:
 
 def code_text(value: Any, limit: int = 500) -> str:
     return f"<code>{html_escape(one_line(value, limit))}</code>"
+
+
+def username_value_html(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return code_text("нет")
+    if USERNAME_RE.match(text):
+        return target_ref_html(text)
+    return code_text(text, 80)
+
+
+def public_username_key(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    username = str(item.get("username") or "").strip().lstrip("@")
+    return username.lower() if username else None
+
+
+def public_username_map(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for item in value:
+        key = public_username_key(item)
+        if key and isinstance(item, dict):
+            result[key] = {**item, "username": str(item.get("username") or "").strip().lstrip("@")}
+    return result
+
+
+def public_username_order(*values: Any) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            key = public_username_key(item)
+            if key and key not in seen:
+                ordered.append(key)
+                seen.add(key)
+    return ordered
+
+
+def public_username_flags(item: dict[str, Any]) -> str:
+    flags: list[str] = []
+    if item.get("primary"):
+        flags.append("основной")
+
+    active = item.get("active")
+    if active is True:
+        flags.append("активен")
+    elif active is False:
+        flags.append("неактивен")
+
+    editable = item.get("editable")
+    if editable is True:
+        flags.append("редактируемый")
+    elif editable is False:
+        flags.append("нередактируемый")
+
+    return ", ".join(flags) if flags else "без флагов"
+
+
+def public_username_item_html(item: dict[str, Any]) -> str:
+    username = username_value_html(item.get("username"))
+    return f"{username} <code>({html_escape(public_username_flags(item))})</code>"
+
+
+def format_public_usernames_change(change: dict[str, Any]) -> str:
+    old_map = public_username_map(change.get("old"))
+    new_map = public_username_map(change.get("new"))
+    lines = [f"<b>{html_escape(change['label'])}</b>:"]
+
+    for key in public_username_order(change.get("old"), change.get("new")):
+        old_item = old_map.get(key)
+        new_item = new_map.get(key)
+
+        if old_item is None and new_item is not None:
+            lines.append(f"добавлен: {public_username_item_html(new_item)}")
+            continue
+        if old_item is not None and new_item is None:
+            lines.append(f"удален: {public_username_item_html(old_item)}")
+            continue
+        if old_item is not None and new_item is not None and old_item != new_item:
+            lines.append(f"{username_value_html(new_item.get('username') or old_item.get('username'))}:")
+            lines.append(f"было: <code>{html_escape(public_username_flags(old_item))}</code>")
+            lines.append(f"стало: <code>{html_escape(public_username_flags(new_item))}</code>")
+
+    if len(lines) == 1:
+        lines.append(f"{format_value(change.get('old'))} -&gt; {format_value(change.get('new'))}")
+    return "\n".join(lines)
 
 
 def format_duration(value: Any) -> str:
@@ -1979,6 +2089,10 @@ def format_stars_rating_change(change: dict[str, Any]) -> str:
 def format_pretty_profile_change(change: dict[str, Any]) -> str | None:
     label = html_escape(change["label"])
     path = change["path"]
+    if path == "username":
+        return f"<b>{label}</b>: {username_value_html(change['old'])} -&gt; {username_value_html(change['new'])}"
+    if path == "public_usernames":
+        return format_public_usernames_change(change)
     if path == "emoji_status":
         return f"<b>{label}</b>: {emoji_status_html(change['old'])} -&gt; {emoji_status_html(change['new'])}"
     if path in {"current_photo", "profile_photo", "personal_photo", "fallback_photo"}:
@@ -2434,6 +2548,7 @@ class ProfileMonitor:
             f"Последнее завершение: <code>{html_escape(self.last_finished_at or 'нет')}</code>",
             f"State: <code>{html_escape(self.config.monitor.state_path)}</code>",
             f"Events: <code>{html_escape(self.config.monitor.events_path)}</code>",
+            f"Account events: <code>{html_escape(self.store.account_events_dir)}</code>",
         ]
         if self.last_error:
             lines.append(f"Последняя ошибка: <code>{html_escape(self.last_error)}</code>")
