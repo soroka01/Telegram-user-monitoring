@@ -461,6 +461,10 @@ VOLATILE_COMPARE_KEYS = {
     "resell_min_stars",
     "availability_resale",
     "upgrade_stars",
+    "sender",
+    "sender_peer",
+    "recipient",
+    "recipient_peer",
 }
 
 
@@ -1613,7 +1617,7 @@ def format_msk_datetime(value: Any) -> str:
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%y %H:%M МСК")
+        return dt.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%y %H:%M:%S МСК")
     except (TypeError, ValueError):
         return one_line(value, 80)
 
@@ -2135,7 +2139,7 @@ def format_diff(snapshot: dict[str, Any], diff: dict[str, Any]) -> str:
     lines = [
         "<b>Изменения профиля</b>",
         target_header(snapshot),
-        f"снимок: <code>{html_escape(snapshot.get('taken_at'))}</code>",
+        f"снимок: <code>{html_escape(format_msk_datetime(snapshot.get('taken_at')))}</code>",
         "",
     ]
 
@@ -2206,7 +2210,7 @@ def format_snapshot_summary(snapshot: dict[str, Any], title: str = "Снимок
     lines = [
         f"<b>{html_escape(title)}</b>",
         target_header(snapshot),
-        f"снят: <code>{html_escape(snapshot.get('taken_at'))}</code>",
+        f"снят: <code>{html_escape(format_msk_datetime(snapshot.get('taken_at')))}</code>",
         "",
         f"<b>Имя:</b> {code_text(profile.get('first_name') or 'нет')}",
         f"<b>Фамилия:</b> {code_text(profile.get('last_name') or 'нет')}",
@@ -2317,7 +2321,7 @@ class ProfileMonitor:
         target_text = str(target).strip()
         if target_text.lstrip("-").isdigit() and target_text == str(profile_id):
             return line
-        return f"{line} id: <code>{html_escape(profile_id)}</code>"
+        return f"{line} <code>{html_escape(profile_id)}</code>"
 
     async def run_once(
         self,
@@ -2389,7 +2393,8 @@ class ProfileMonitor:
                 await self.notify_diff(snapshot, diff, bundle.photo_objects, bundle.music_document)
             elif notify_no_changes:
                 await self.send_admin_text(
-                    f"<b>Без изменений</b>\n{target_header(snapshot)}\nснимок: <code>{html_escape(snapshot.get('taken_at'))}</code>"
+                    f"<b>Без изменений</b>\n{target_header(snapshot)}\n"
+                    f"снимок: <code>{html_escape(format_msk_datetime(snapshot.get('taken_at')))}</code>"
                 )
 
             return CheckResult(
@@ -2595,7 +2600,7 @@ class ProfileMonitor:
                 lines.append(
                     f"• {html_escape(identity.get('display') or identity.get('id'))} "
                     f"<code>{html_escape(identity.get('id'))}</code>, "
-                    f"снят <code>{html_escape(profile.get('taken_at'))}</code>"
+                    f"снят <code>{html_escape(format_msk_datetime(profile.get('taken_at')))}</code>"
                 )
         return "\n".join(lines)
 
