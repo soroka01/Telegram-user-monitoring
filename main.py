@@ -49,6 +49,7 @@ SCHEMA_VERSION = 2
 USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{5,32}$")
 ID_WITH_HASH_RE = re.compile(r"^(?:id:)?(?P<id>-?\d+)\s*:\s*(?P<hash>-?\d+)$", re.IGNORECASE)
 ID_PREFIX_RE = re.compile(r"^id:(?P<id>-?\d+)$", re.IGNORECASE)
+ID_USERNAME_RE = re.compile(r"^(?P<id>-?\d+)\s+(?P<username>@?[A-Za-z0-9_]{5,32})$")
 DAYS_RU = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 
@@ -154,6 +155,41 @@ def parse_admin_ids(raw: Any) -> set[int]:
     return ids or {DEFAULT_ADMIN_ID}
 
 
+def normalized_config_username(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text if text.startswith("@") else f"@{text}"
+
+
+def target_from_config_entry(item: Any) -> str:
+    if isinstance(item, dict):
+        username = normalized_config_username(item.get("username"))
+        if username:
+            profile_id = item.get("id") or item.get("profile_id") or item.get("user_id")
+            return f"{str(profile_id).strip()} {username}" if profile_id not in (None, "") else username
+        profile_id = item.get("id") or item.get("profile_id") or item.get("user_id")
+        if profile_id not in (None, ""):
+            return str(profile_id).strip()
+        value = item.get("target")
+        if value not in (None, ""):
+            return str(value).strip()
+        return ""
+    return str(item).strip()
+
+
+def target_identity_parts(target: Any) -> tuple[str | None, str | None]:
+    text = str(target or "").strip()
+    match = ID_USERNAME_RE.match(text)
+    if match:
+        return match.group("id"), normalized_config_username(match.group("username"))
+    if text.lstrip("-").isdigit():
+        return text, None
+    if USERNAME_RE.match(text):
+        return None, normalized_config_username(text)
+    return None, None
+
+
 def parse_targets(raw: Any) -> list[str]:
     env_targets = os.getenv("MONITOR_TARGETS")
     if env_targets:
@@ -162,7 +198,7 @@ def parse_targets(raw: Any) -> list[str]:
     if isinstance(raw, str):
         targets = [item.strip() for item in raw.split(",")]
     else:
-        targets = [str(item).strip() for item in raw or []]
+        targets = [target_from_config_entry(item) for item in raw or []]
 
     return [item for item in targets if item]
 
@@ -1163,9 +1199,9 @@ class StateStore:
         with self.events_path.open("a", encoding="utf-8") as file:
             file.write(payload)
 
-        profile_id = self.event_profile_id(event)
-        if profile_id:
-            account_dir = self.account_events_dir / profile_id
+        account_dir_name = self.event_account_dir_name(event)
+        if account_dir_name:
+            account_dir = self.account_events_dir / account_dir_name
             account_dir.mkdir(parents=True, exist_ok=True)
             with (account_dir / self.events_path.name).open("a", encoding="utf-8") as file:
                 file.write(payload)
@@ -1179,6 +1215,15 @@ class StateStore:
             return None
         return re.sub(r"[^0-9A-Za-z_-]+", "_", str(profile_id)).strip("_") or None
 
+    @staticmethod
+    def event_account_dir_name(event: dict[str, Any]) -> str | None:
+        profile_id = StateStore.event_profile_id(event)
+        if not profile_id:
+            return None
+        username = event.get("username") or event.get("snapshot", {}).get("identity", {}).get("username")
+        username_text = re.sub(r"[^0-9A-Za-z_-]+", "_", str(username or "").lstrip("@")).strip("_")
+        return f"{profile_id}_{username_text}" if username_text else profile_id
+
     def profile(self, profile_id: str) -> dict[str, Any] | None:
         return self.data.get("profiles", {}).get(str(profile_id))
 
@@ -1186,13 +1231,20 @@ class StateStore:
         profile_id = str(snapshot["identity"]["id"])
         self.data.setdefault("profiles", {})[profile_id] = snapshot
         access_hash = snapshot["identity"].get("access_hash")
-        self.data.setdefault("target_index", {})[target] = {
+        indexed = {
             "id": snapshot["identity"]["id"],
             "access_hash": access_hash,
             "display": snapshot["identity"].get("display"),
             "username": snapshot["identity"].get("username"),
             "updated_at": utc_now_iso(),
         }
+        index = self.data.setdefault("target_index", {})
+        index[target] = indexed
+        index[profile_id] = indexed
+        username = snapshot["identity"].get("username")
+        if username:
+            index[f"@{username}"] = indexed
+            index[str(username)] = indexed
         self.save()
 
     def indexed_target(self, target: str) -> dict[str, Any] | None:
@@ -1200,6 +1252,14 @@ class StateStore:
         indexed = index.get(target)
         if indexed is not None:
             return indexed
+
+        target_id, target_username = target_identity_parts(target)
+        if target_id and index.get(target_id) is not None:
+            return index[target_id]
+        if target_username:
+            for key in (target_username, target_username.lstrip("@")):
+                if index.get(key) is not None:
+                    return index[key]
 
         normalized = target.strip().lstrip("@").lower()
         for saved_target, saved_indexed in index.items():
@@ -1393,6 +1453,12 @@ class ProfileReader:
 
 def normalize_target(target: str) -> str | int:
     value = target.strip()
+    target_id, target_username = target_identity_parts(value)
+    if target_username:
+        return target_username
+    if target_id:
+        return int(target_id)
+
     if value.startswith("https://t.me/"):
         value = value.removeprefix("https://t.me/").split("/", 1)[0]
     elif value.startswith("t.me/"):
@@ -1406,6 +1472,81 @@ def normalize_target(target: str) -> str | int:
     if USERNAME_RE.match(value):
         return value if value.startswith("@") else f"@{value}"
     return value
+
+
+def canonical_snapshot_target(snapshot: dict[str, Any]) -> str:
+    identity = snapshot.get("identity", {})
+    username = identity.get("username")
+    if username:
+        return f"@{username}"
+    return str(identity.get("id") or snapshot.get("target") or "")
+
+
+def target_key(value: Any) -> str:
+    return str(value or "").strip().lstrip("@").lower()
+
+
+def config_entry_matches_snapshot(entry: Any, requested_target: str, snapshot: dict[str, Any]) -> bool:
+    identity = snapshot.get("identity", {})
+    profile_id = str(identity.get("id") or "")
+    username = identity.get("username")
+    requested_key = target_key(requested_target)
+    username_key = target_key(username)
+
+    if isinstance(entry, dict):
+        entry_id = entry.get("id") or entry.get("profile_id") or entry.get("user_id")
+        if entry_id not in (None, "") and str(entry_id) == profile_id:
+            return True
+        entry_username_key = target_key(entry.get("username"))
+        if entry_username_key and entry_username_key in {requested_key, username_key}:
+            return True
+        entry_target_key = target_key(entry.get("target"))
+        return bool(entry_target_key and entry_target_key == requested_key)
+
+    entry_text = str(entry or "").strip()
+    if entry_text == profile_id:
+        return True
+    entry_key = target_key(entry_text)
+    return bool(entry_key and entry_key in {requested_key, username_key})
+
+
+def config_entry_for_snapshot(entry: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    identity = snapshot.get("identity", {})
+    clean_entry = dict(entry) if isinstance(entry, dict) else {}
+    for key in ("target", "profile_id", "user_id"):
+        clean_entry.pop(key, None)
+    clean_entry["id"] = identity.get("id")
+    username = identity.get("username")
+    clean_entry["username"] = f"@{username}" if username else None
+    return clean_entry
+
+
+def sync_config_target(requested_target: str, snapshot: dict[str, Any]) -> None:
+    if os.getenv("MONITOR_TARGETS"):
+        return
+    try:
+        raw = load_json(CONFIG_PATH)
+    except ConfigError:
+        logging.exception("Cannot sync config target because config cannot be read")
+        return
+
+    monitor_raw = raw.get("monitor")
+    if not isinstance(monitor_raw, dict):
+        return
+    targets = monitor_raw.get("targets")
+    if not isinstance(targets, list):
+        return
+
+    for index, entry in enumerate(targets):
+        if not config_entry_matches_snapshot(entry, requested_target, snapshot):
+            continue
+        new_entry = config_entry_for_snapshot(entry, snapshot)
+        if entry == new_entry:
+            return
+        targets[index] = new_entry
+        CONFIG_PATH.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        logging.info("Synced config target %s -> %s", requested_target, new_entry)
+        return
 
 
 LEAF_PROFILE_KEYS = {
@@ -1607,6 +1748,35 @@ def target_ref_html(target: Any) -> str:
         return f'<a href="https://t.me/{html_attr(username)}">@{html_escape(username)}</a>'
 
     return f"<code>{html_escape(text)}</code>"
+
+
+INVISIBLE_NAME_CHARS = str.maketrans("", "", "\u1160\u3164\u2800\u200b\u200c\u200d\ufeff")
+
+
+def clean_plain_name_part(value: Any, limit: int = 140) -> str | None:
+    if value is None:
+        return None
+    text = str(value).translate(INVISIBLE_NAME_CHARS)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    return text[: limit - 3] + "..." if len(text) > limit else text
+
+
+def profile_plain_name(snapshot: dict[str, Any] | None, limit: int = 140) -> str | None:
+    if not snapshot:
+        return None
+    profile = snapshot.get("profile", {})
+    parts = [
+        clean_plain_name_part(profile.get("first_name"), limit),
+        clean_plain_name_part(profile.get("last_name"), limit),
+    ]
+    name = " ".join(part for part in parts if part).strip()
+    if not name:
+        return None
+    if len(name) > limit:
+        return name[: limit - 3] + "..."
+    return name
 
 
 def format_msk_datetime(value: Any) -> str:
@@ -2312,13 +2482,19 @@ class ProfileMonitor:
         )
 
     def startup_target_line(self, target: str) -> str:
-        line = f"• {target_ref_html(target)}"
         indexed = self.store.indexed_target(target) or {}
-        profile_id = indexed.get("id")
+        target_id, target_username = target_identity_parts(target)
+        username = indexed.get("username") or (target_username.lstrip("@") if target_username else None)
+        display_target = f"@{username}" if username else target
+        profile_id = indexed.get("id") or target_id
+        profile = self.store.profile(str(profile_id)) if profile_id is not None else None
+        plain_name = profile_plain_name(profile)
+        prefix = f"• {html_escape(plain_name)} " if plain_name else "• "
+        line = f"{prefix}{target_ref_html(display_target)}"
         if profile_id is None:
             return line
 
-        target_text = str(target).strip()
+        target_text = str(display_target).strip()
         if target_text.lstrip("-").isdigit() and target_text == str(profile_id):
             return line
         return f"{line} <code>{html_escape(profile_id)}</code>"
@@ -2353,16 +2529,23 @@ class ProfileMonitor:
         try:
             bundle = await self.reader.read(target)
             snapshot = bundle.snapshot
+            canonical_target = canonical_snapshot_target(snapshot)
+            snapshot["target"] = canonical_target
+            if canonical_target != target:
+                snapshot["configured_target"] = target
             profile_id = str(snapshot["identity"]["id"])
             previous = self.store.profile(profile_id)
 
             if previous is None:
                 self.store.upsert_profile(target, snapshot)
+                sync_config_target(target, snapshot)
                 self.store.append_event(
                     {
                         "type": "baseline",
-                        "target": target,
+                        "target": canonical_target,
+                        "configured_target": target if canonical_target != target else None,
                         "profile_id": profile_id,
+                        "username": snapshot["identity"].get("username"),
                         "snapshot": snapshot,
                     }
                 )
@@ -2379,13 +2562,16 @@ class ProfileMonitor:
 
             diff = diff_snapshots(previous, snapshot)
             self.store.upsert_profile(target, snapshot)
+            sync_config_target(target, snapshot)
 
             if diff_has_changes(diff):
                 self.store.append_event(
                     {
                         "type": "change",
-                        "target": target,
+                        "target": canonical_target,
+                        "configured_target": target if canonical_target != target else None,
                         "profile_id": profile_id,
+                        "username": snapshot["identity"].get("username"),
                         "diff": diff,
                         "snapshot": snapshot,
                     }
@@ -2588,8 +2774,14 @@ class ProfileMonitor:
         for target in self.config.monitor.targets:
             indexed = self.store.indexed_target(target) or {}
             display = indexed.get("display") or "пока не снят"
-            profile_id = indexed.get("id") or "нет"
-            lines.append(f"• {target_ref_html(target)} -&gt; {html_escape(display)} <code>{html_escape(profile_id)}</code>")
+            target_id, target_username = target_identity_parts(target)
+            profile_id = indexed.get("id") or target_id or "нет"
+            username = indexed.get("username") or (target_username.lstrip("@") if target_username else None)
+            display_target = f"@{username}" if username else target
+            profile = self.store.profile(str(profile_id)) if profile_id != "нет" else None
+            plain_name = profile_plain_name(profile)
+            prefix = f"• {html_escape(plain_name)} " if plain_name else "• "
+            lines.append(f"{prefix}{target_ref_html(display_target)} -&gt; {html_escape(display)} <code>{html_escape(profile_id)}</code>")
 
         profiles = self.store.all_profiles()
         if profiles:

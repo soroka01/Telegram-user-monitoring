@@ -15,8 +15,14 @@
   },
   "monitor": {
     "targets": [
-      "@username",
-      "123456789"
+      {
+        "id": 123456789,
+        "username": "@username"
+      },
+      {
+        "id": 987654321,
+        "username": null
+      }
     ],
     "interval_seconds": 300,
     "request_delay_seconds": 1.0,
