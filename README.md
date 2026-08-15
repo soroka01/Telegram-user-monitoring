@@ -4,7 +4,7 @@
 
 🌐 **Язык:** [Русский](README.md) · [English](README_EN.md)
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
 ![Telethon](https://img.shields.io/badge/Telethon-user_session-0088CC?logo=telegram&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-Telegram_bot-26A5E4?logo=telegram&logoColor=white)
 ![MIT License](https://img.shields.io/badge/License-MIT-2EA44F.svg)
@@ -58,7 +58,8 @@ Username используется для первого resolution, а стаб�
 
 ## 📋 Требования
 
-- Python 3.10 или новее;
+- Python 3.14 или новее (рекомендуется актуальный патч 3.14.6);
+- pip 26.1.2, setuptools 84.0.0 и wheel 0.48.0 (launcher обновляет их автоматически);
 - пользовательский Telegram-аккаунт;
 - `api_id` и `api_hash` из [Telegram API development tools](https://my.telegram.org);
 - Telegram bot token от [@BotFather](https://t.me/BotFather);

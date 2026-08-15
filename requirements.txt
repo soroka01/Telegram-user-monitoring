@@ -1,4 +1,4 @@
-aiogram>=3.20
-telethon>=1.43
-qrcode[pil]>=7.4
-tzdata>=2025.2
+aiogram>=3.30.0,<4
+telethon>=1.44.0,<2
+qrcode[pil]>=8.2,<9
+tzdata>=2026.3
