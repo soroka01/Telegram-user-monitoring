@@ -159,10 +159,14 @@ python main.py
 ```json
 {
   "monitor": {
-    "targets": [
-      {"id": 123456789, "username": "@username"},
-      {"id": 987654321, "username": null}
-    ]
+    "targets": {
+      "active": [
+        {"id": 123456789, "username": "@username"}
+      ],
+      "inactive": [
+        {"id": 987654321, "username": null}
+      ]
+    }
   }
 }
 ```
@@ -178,6 +182,10 @@ python main.py
 | Prefix + ID + hash | `id:123456789:987654321012345678` | То же в явном формате |
 
 После успешного snapshot монитор может переписать соответствующую запись в `config.json` в объект с актуальными `id` и `username`. Дополнительные ключи объекта сохраняются. При использовании `MONITOR_TARGETS` файл не синхронизируется.
+
+В `monitor.targets.active` лежат аккаунты, которые проверяются по расписанию. В `monitor.targets.inactive` лежат выключенные аккаунты: они остаются в конфиге и state, но не идут в регулярный мониторинг. Переключать можно из бота командами `/enable @username_or_id` и `/disable @username_or_id`.
+
+После первого успешного снимка монитор сохраняет `id/access_hash` и дальше старается следить за тем же аккаунтом, даже если username сменился. Также он сам обновляет `monitor.targets` в `config.json` до актуальных `id` и `@username`, если цель была указана старым username или голым id.
 
 ## ⚙️ Конфигурация
 
@@ -242,6 +250,8 @@ Environment values имеют приоритет над config.
 | `/watchlist` | Configured targets и сохранённые snapshots |
 | `/check` | Немедленно проверить все цели |
 | `/check @username` | Разово проверить одну цель |
+| `/enable @username_or_id` | Включить цель в постоянном мониторинге |
+| `/disable @username_or_id` | Отключить цель, сохранив её в config и state |
 | `/snapshot @username_or_id` | Показать последний snapshot из state |
 
 Пользователи вне `admin_ids` получают отказ в доступе.
@@ -260,7 +270,8 @@ Environment values имеют приоритет над config.
 | `user_monitor_account.session` | Авторизованная Telethon session |
 | `state/profile_state.json` | Последний snapshot каждого profile ID и target index |
 | `logs/profile_events.jsonl` | Глобальная baseline/change/error history с полным JSON |
-| `logs/accounts/<id_username>/profile_events.jsonl` | История отдельного аккаунта |
+| `logs/accounts/active/<id_username>/profile_events.jsonl` | История активного аккаунта |
+| `logs/accounts/inactive/<id_username>/profile_events.jsonl` | История отключённого аккаунта |
 | `logs/monitor.log` | Технический runtime log |
 | `media/<user_id>/` | Скачанные новые аватарки |
 | `media/<user_id>/music/` | Скачанная profile music |

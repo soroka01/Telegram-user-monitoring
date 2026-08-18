@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -80,6 +81,7 @@ class BotConfig:
 @dataclass(frozen=True)
 class MonitorConfig:
     targets: list[str]
+    inactive_targets: list[str]
     interval_seconds: int
     request_delay_seconds: float
     profile_photo_limit: int
@@ -190,17 +192,24 @@ def target_identity_parts(target: Any) -> tuple[str | None, str | None]:
     return None, None
 
 
-def parse_targets(raw: Any) -> list[str]:
-    env_targets = os.getenv("MONITOR_TARGETS")
-    if env_targets:
-        raw = env_targets
-
+def parse_target_list(raw: Any) -> list[str]:
     if isinstance(raw, str):
         targets = [item.strip() for item in raw.split(",")]
     else:
         targets = [target_from_config_entry(item) for item in raw or []]
 
     return [item for item in targets if item]
+
+
+def parse_target_groups(raw: Any) -> tuple[list[str], list[str]]:
+    env_targets = os.getenv("MONITOR_TARGETS")
+    if env_targets:
+        return parse_target_list(env_targets), []
+
+    if isinstance(raw, dict):
+        return parse_target_list(raw.get("active", [])), parse_target_list(raw.get("inactive", []))
+
+    return parse_target_list(raw), []
 
 
 def resolve_path(raw: Any, default: str) -> Path:
@@ -234,14 +243,15 @@ def load_config() -> AppConfig:
     bot_token = validate_secret("bot.token", env_or_value("BOT_TOKEN", bot_raw.get("token")))
 
     admin_ids = parse_admin_ids(env_or_value("ADMIN_IDS", bot_raw.get("admin_ids", bot_raw.get("admin_id"))))
-    targets = parse_targets(monitor_raw.get("targets", []))
-    if not targets:
+    targets, inactive_targets = parse_target_groups(monitor_raw.get("targets", []))
+    if not targets and not inactive_targets:
         raise ConfigError("Добавь хотя бы одну цель в monitor.targets.")
 
     session_path = resolve_path(telegram_raw.get("session_name"), "user_monitor_account")
 
     monitor = MonitorConfig(
         targets=targets,
+        inactive_targets=inactive_targets,
         interval_seconds=max(30, int(monitor_raw.get("interval_seconds", 300))),
         request_delay_seconds=max(0.0, float(monitor_raw.get("request_delay_seconds", 1.0))),
         profile_photo_limit=max(1, int(monitor_raw.get("profile_photo_limit", 20))),
@@ -1201,7 +1211,8 @@ class StateStore:
 
         account_dir_name = self.event_account_dir_name(event)
         if account_dir_name:
-            account_dir = self.account_events_dir / account_dir_name
+            account_status = "inactive" if event.get("monitoring_status") == "inactive" else "active"
+            account_dir = self.account_events_dir / account_status / account_dir_name
             account_dir.mkdir(parents=True, exist_ok=True)
             with (account_dir / self.events_path.name).open("a", encoding="utf-8") as file:
                 file.write(payload)
@@ -1221,8 +1232,65 @@ class StateStore:
         if not profile_id:
             return None
         username = event.get("username") or event.get("snapshot", {}).get("identity", {}).get("username")
+        return StateStore.account_dir_name(profile_id, username)
+
+    @staticmethod
+    def account_dir_name(profile_id: Any, username: Any = None) -> str:
+        profile_id_text = re.sub(r"[^0-9A-Za-z_-]+", "_", str(profile_id)).strip("_")
         username_text = re.sub(r"[^0-9A-Za-z_-]+", "_", str(username or "").lstrip("@")).strip("_")
-        return f"{profile_id}_{username_text}" if username_text else profile_id
+        return f"{profile_id_text}_{username_text}" if username_text else profile_id_text
+
+    def merge_account_dir(self, source: Path, destination: Path) -> None:
+        if not source.exists() or source.resolve() == destination.resolve():
+            return
+        destination.mkdir(parents=True, exist_ok=True)
+        for child in source.iterdir():
+            target = destination / child.name
+            if child.is_dir():
+                self.merge_account_dir(child, target)
+                if child.exists():
+                    child.rmdir()
+            elif target.exists() and child.name == self.events_path.name:
+                with child.open("r", encoding="utf-8", errors="ignore") as src, target.open("a", encoding="utf-8") as dst:
+                    dst.write(src.read())
+                child.unlink()
+            else:
+                if target.exists():
+                    target.unlink()
+                shutil.move(str(child), str(target))
+        if source.exists():
+            try:
+                source.rmdir()
+            except OSError:
+                pass
+
+    def move_account_logs(self, profile_id: Any, username: Any, active: bool) -> None:
+        if profile_id in (None, ""):
+            return
+        status = "active" if active else "inactive"
+        profile_id_text = re.sub(r"[^0-9A-Za-z_-]+", "_", str(profile_id)).strip("_")
+        destination = self.account_events_dir / status / self.account_dir_name(profile_id, username)
+        roots = [self.account_events_dir, self.account_events_dir / "active", self.account_events_dir / "inactive"]
+        candidates: list[Path] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for candidate in root.iterdir():
+                if candidate.is_dir() and (candidate.name == profile_id_text or candidate.name.startswith(profile_id_text + "_")):
+                    candidates.append(candidate)
+        for candidate in candidates:
+            self.merge_account_dir(candidate, destination)
+
+    def organize_account_logs(self, active_accounts: dict[str, str | None], inactive_accounts: dict[str, str | None]) -> None:
+        for profile_id, username in inactive_accounts.items():
+            self.move_account_logs(profile_id, username, active=False)
+        for profile_id, username in active_accounts.items():
+            self.move_account_logs(profile_id, username, active=True)
+        for candidate in list(self.account_events_dir.iterdir()) if self.account_events_dir.exists() else []:
+            if candidate.is_dir() and candidate.name not in {"active", "inactive"}:
+                profile_id = candidate.name.split("_", 1)[0]
+                username = candidate.name.split("_", 1)[1] if "_" in candidate.name else None
+                self.move_account_logs(profile_id, username, active=False)
 
     def profile(self, profile_id: str) -> dict[str, Any] | None:
         return self.data.get("profiles", {}).get(str(profile_id))
@@ -1521,6 +1589,70 @@ def config_entry_for_snapshot(entry: Any, snapshot: dict[str, Any]) -> dict[str,
     return clean_entry
 
 
+def config_entry_matches_query(entry: Any, query: str, indexed: dict[str, Any] | None = None) -> bool:
+    query_id, query_username = target_identity_parts(query)
+    query_keys = {target_key(query), target_key(query_username)}
+    indexed = indexed or {}
+    indexed_id = indexed.get("id")
+    indexed_username = indexed.get("username")
+    if indexed_id not in (None, ""):
+        query_id = str(indexed_id)
+    if indexed_username:
+        query_keys.add(target_key(indexed_username))
+
+    if isinstance(entry, dict):
+        entry_id = entry.get("id") or entry.get("profile_id") or entry.get("user_id")
+        if query_id and entry_id not in (None, "") and str(entry_id) == str(query_id):
+            return True
+        entry_keys = {target_key(entry.get("username")), target_key(entry.get("target"))}
+        return bool((entry_keys - {""}) & (query_keys - {""}))
+
+    entry_id, entry_username = target_identity_parts(entry)
+    if query_id and entry_id and str(entry_id) == str(query_id):
+        return True
+    entry_keys = {target_key(entry), target_key(entry_username)}
+    return bool((entry_keys - {""}) & (query_keys - {""}))
+
+
+def config_entry_for_indexed(entry: Any, query: str, indexed: dict[str, Any] | None = None) -> Any:
+    indexed = indexed or {}
+    entry_id = None
+    entry_username = None
+    if isinstance(entry, dict):
+        entry_id = entry.get("id") or entry.get("profile_id") or entry.get("user_id")
+        entry_username = normalized_config_username(entry.get("username"))
+    else:
+        entry_id, entry_username = target_identity_parts(entry)
+
+    query_id, query_username = target_identity_parts(query)
+    profile_id = indexed.get("id") or entry_id or query_id
+    username = indexed.get("username") or entry_username or query_username
+    if username:
+        username = str(username).lstrip("@")
+    if profile_id in (None, ""):
+        return entry
+    clean_entry = dict(entry) if isinstance(entry, dict) else {}
+    for key in ("target", "profile_id", "user_id"):
+        clean_entry.pop(key, None)
+    clean_entry["id"] = int(profile_id) if str(profile_id).lstrip("-").isdigit() else profile_id
+    clean_entry["username"] = f"@{username}" if username else None
+    return clean_entry
+
+
+def split_config_target_entries(targets: Any) -> tuple[list[Any], list[Any]]:
+    if isinstance(targets, dict):
+        active = list(targets.get("active", []) or [])
+        inactive = list(targets.get("inactive", []) or [])
+        return active, inactive
+    if isinstance(targets, list):
+        return list(targets), []
+    return [], []
+
+
+def set_config_target_entries(monitor_raw: dict[str, Any], active: list[Any], inactive: list[Any]) -> None:
+    monitor_raw["targets"] = {"active": active, "inactive": inactive}
+
+
 def sync_config_target(requested_target: str, snapshot: dict[str, Any]) -> None:
     if os.getenv("MONITOR_TARGETS"):
         return
@@ -1533,20 +1665,21 @@ def sync_config_target(requested_target: str, snapshot: dict[str, Any]) -> None:
     monitor_raw = raw.get("monitor")
     if not isinstance(monitor_raw, dict):
         return
-    targets = monitor_raw.get("targets")
-    if not isinstance(targets, list):
-        return
+    active_targets, inactive_targets = split_config_target_entries(monitor_raw.get("targets"))
+    target_groups = (active_targets, inactive_targets)
 
-    for index, entry in enumerate(targets):
-        if not config_entry_matches_snapshot(entry, requested_target, snapshot):
-            continue
-        new_entry = config_entry_for_snapshot(entry, snapshot)
-        if entry == new_entry:
+    for targets in target_groups:
+        for index, entry in enumerate(targets):
+            if not config_entry_matches_snapshot(entry, requested_target, snapshot):
+                continue
+            new_entry = config_entry_for_snapshot(entry, snapshot)
+            if entry == new_entry and isinstance(monitor_raw.get("targets"), dict):
+                return
+            targets[index] = new_entry
+            set_config_target_entries(monitor_raw, active_targets, inactive_targets)
+            CONFIG_PATH.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            logging.info("Synced config target %s -> %s", requested_target, new_entry)
             return
-        targets[index] = new_entry
-        CONFIG_PATH.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        logging.info("Synced config target %s -> %s", requested_target, new_entry)
-        return
 
 
 LEAF_PROFILE_KEYS = {
@@ -1637,8 +1770,46 @@ def gift_map(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {item["key"]: item for item in snapshot.get("gifts", {}).get("items", []) if item.get("key")}
 
 
+GIFT_DISPLAY_ONLY_KEYS = {
+    "digest",
+    "from",
+    "owner",
+    "released_by",
+}
+
+
+def gift_compare_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: gift_compare_value(item)
+            for key, item in value.items()
+            if key not in VOLATILE_COMPARE_KEYS and key not in GIFT_DISPLAY_ONLY_KEYS
+        }
+    if isinstance(value, list):
+        return [gift_compare_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [gift_compare_value(item) for item in value]
+    return value
+
+
 def gift_digest(item: dict[str, Any]) -> str:
-    return stable_hash(strip_volatile({key: value for key, value in item.items() if key != "digest"}))
+    return stable_hash(gift_compare_value(item))
+
+
+def gift_field_changes(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+
+    def walk(old_value: Any, new_value: Any, path: str = "") -> None:
+        if isinstance(old_value, dict) and isinstance(new_value, dict):
+            for key in sorted(set(old_value) | set(new_value)):
+                child_path = f"{path}.{key}" if path else key
+                walk(old_value.get(key), new_value.get(key), child_path)
+            return
+        if old_value != new_value:
+            changes.append({"path": path, "old": old_value, "new": new_value})
+
+    walk(gift_compare_value(old), gift_compare_value(new))
+    return changes
 
 
 def diff_snapshots(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
@@ -1685,7 +1856,15 @@ def diff_snapshots(previous: dict[str, Any], current: dict[str, Any]) -> dict[st
         "photo_removed": sorted(old_photo_ids - new_photo_ids),
         "gift_added": [new_gifts[key] for key in added_gift_keys],
         "gift_removed": [old_gifts[key] for key in removed_gift_keys],
-        "gift_changed": [new_gifts[key] for key in changed_gift_keys],
+        "gift_changed": [
+            {
+                "key": key,
+                "old": old_gifts[key],
+                "new": new_gifts[key],
+                "changes": gift_field_changes(old_gifts[key], new_gifts[key]),
+            }
+            for key in changed_gift_keys
+        ],
         "gift_meta_changes": gift_meta_changes,
     }
 
@@ -2269,6 +2448,84 @@ def format_stars_rating_change(change: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+GIFT_FIELD_LABELS = {
+    "date": "дата получения",
+    "from_peer": "отправитель",
+    "message.text": "подпись",
+    "name_hidden": "имя отправителя скрыто",
+    "unsaved": "скрыт из профиля",
+    "refunded": "возврат",
+    "can_upgrade": "возможность улучшения",
+    "pinned_to_top": "закрепление",
+    "upgrade_separate": "отдельное улучшение",
+    "convert_stars": "звёзды при конвертации",
+    "upgrade_stars": "стоимость улучшения",
+    "transfer_stars": "стоимость передачи",
+    "collection_id": "коллекция",
+    "gift_num": "номер подарка",
+    "gift.type": "тип",
+    "gift.title": "название",
+    "gift.sticker_emoji": "эмодзи",
+    "gift.id": "id подарка",
+    "gift.gift_id": "id исходного подарка",
+    "gift.slug": "уникальная ссылка",
+    "gift.num": "уникальный номер",
+    "gift.stars": "стоимость",
+    "gift.convert_stars": "звёзды при конвертации",
+    "gift.limited": "ограниченный тираж",
+    "gift.sold_out": "распродан",
+    "gift.birthday": "подарок ко дню рождения",
+    "gift.require_premium": "требуется Premium",
+    "gift.availability_remains": "осталось в тираже",
+    "gift.owner_peer": "владелец",
+    "gift.owner_address": "адрес владельца",
+    "gift.gift_address": "адрес подарка",
+    "gift.attributes": "характеристики",
+    "gift.background": "фон",
+    "gift.sticker": "стикер",
+}
+
+
+def gift_field_label(path: str) -> str:
+    return GIFT_FIELD_LABELS.get(path, path.replace("gift.", "подарок: ").replace("_", " "))
+
+
+def gift_change_side_value(path: str, value: Any, gift: dict[str, Any]) -> str:
+    if path == "date":
+        return code_text(format_msk_datetime(value), 100)
+    if path == "from_peer":
+        return code_text(gift.get("from") or value, 120)
+    if path == "gift.owner_peer":
+        return code_text((gift.get("gift") or {}).get("owner") or value, 120)
+    if path in {"gift.stars", "convert_stars", "upgrade_stars", "transfer_stars", "gift.convert_stars"}:
+        return code_text(f"{one_line(value, 80)} Stars" if value is not None else "нет", 100)
+    return format_value(value)
+
+
+def format_changed_gift(change: dict[str, Any]) -> str:
+    old_gift = change.get("old") or {}
+    new_gift = change.get("new") or {}
+    gift = new_gift or old_gift
+    gift_info = gift.get("gift") or {}
+    title = gift_info.get("title") or gift_info.get("sticker_emoji") or change.get("key") or "Подарок"
+    lines = [f"<b>Изменён:</b> {html_escape(title)}"]
+
+    changes = change.get("changes") or []
+    for field_change in changes[:20]:
+        path = str(field_change.get("path") or "")
+        label = gift_field_label(path)
+        old_value = gift_change_side_value(path, field_change.get("old"), old_gift)
+        new_value = gift_change_side_value(path, field_change.get("new"), new_gift)
+        lines.append(f"• {html_escape(label)}: {old_value} -&gt; {new_value}")
+
+    hidden_changes = max(0, len(changes) - 20)
+    if hidden_changes:
+        lines.append(f"• ещё изменённых полей: <code>{hidden_changes}</code>")
+    if not changes:
+        lines.append("• изменились только служебные данные Telegram API")
+    return "\n".join(lines)
+
+
 def format_pretty_profile_change(change: dict[str, Any]) -> str | None:
     label = html_escape(change["label"])
     path = change["path"]
@@ -2331,9 +2588,16 @@ def format_diff(snapshot: dict[str, Any], diff: dict[str, Any]) -> str:
     if diff.get("gift_meta_changes"):
         lines.append("")
         lines.append("<b>Счетчики подарков</b>")
+        gift_meta_labels = {
+            "available": "API доступен",
+            "error": "ошибка API",
+            "visible_count": "видно в профиле",
+            "listed_count": "прочитано монитором",
+        }
         for change in diff["gift_meta_changes"]:
             lines.append(
-                f"{html_escape(change['path'])}: {format_value(change['old'])} -&gt; {format_value(change['new'])}"
+                f"{html_escape(gift_meta_labels.get(change['path'], change['path']))}: "
+                f"{format_value(change['old'])} -&gt; {format_value(change['new'])}"
             )
 
     if diff.get("photo_added") or diff.get("photo_removed"):
@@ -2355,14 +2619,15 @@ def format_diff(snapshot: dict[str, Any], diff: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"<b>Подарки пропали из профиля: {len(diff['gift_removed'])}</b>")
         for gift in diff["gift_removed"]:
-            lines.append(f"• {html_escape((gift.get('gift') or {}).get('title') or gift.get('key'))}")
+            lines.append("")
+            lines.append(format_gift(gift, "Удалён"))
 
     if diff.get("gift_changed"):
         lines.append("")
         lines.append(f"<b>Подарки изменились: {len(diff['gift_changed'])}</b>")
-        for gift in diff["gift_changed"]:
+        for gift_change in diff["gift_changed"]:
             lines.append("")
-            lines.append(format_gift(gift, "Текущие детали"))
+            lines.append(format_changed_gift(gift_change))
 
     return "\n".join(lines)
 
@@ -2453,6 +2718,7 @@ class ProfileMonitor:
         self.last_finished_at: str | None = None
         self.last_error: str | None = None
         self.last_results: list[CheckResult] = []
+        self.sync_account_log_layout()
 
     async def run_loop(self) -> None:
         await self.send_admin_text(self.startup_text())
@@ -2472,12 +2738,139 @@ class ProfileMonitor:
     def stop(self) -> None:
         self.stop_event.set()
 
+    def reload_targets_from_config(self) -> None:
+        if os.getenv("MONITOR_TARGETS"):
+            return
+        try:
+            raw = load_json(CONFIG_PATH)
+        except ConfigError:
+            logging.exception("Cannot reload targets from config")
+            return
+        monitor_raw = raw.get("monitor", {})
+        targets, inactive_targets = parse_target_groups(monitor_raw.get("targets", []))
+        object.__setattr__(self.config.monitor, "targets", targets)
+        object.__setattr__(self.config.monitor, "inactive_targets", inactive_targets)
+
+    def target_account_identity(self, target: str) -> tuple[str | None, str | None]:
+        indexed = self.store.indexed_target(target) or {}
+        target_id, target_username = target_identity_parts(target)
+        profile_id = indexed.get("id") or target_id
+        username = indexed.get("username") or (target_username.lstrip("@") if target_username else None)
+        if username:
+            username = str(username).lstrip("@")
+        return (str(profile_id) if profile_id not in (None, "") else None), username
+
+    def account_maps(self) -> tuple[dict[str, str | None], dict[str, str | None]]:
+        def collect(targets: Iterable[str]) -> dict[str, str | None]:
+            accounts: dict[str, str | None] = {}
+            for target in targets:
+                profile_id, username = self.target_account_identity(target)
+                if profile_id:
+                    accounts[profile_id] = username
+            return accounts
+
+        return collect(self.config.monitor.targets), collect(self.config.monitor.inactive_targets)
+
+    def sync_account_log_layout(self) -> None:
+        active_accounts, inactive_accounts = self.account_maps()
+        self.store.organize_account_logs(active_accounts, inactive_accounts)
+
+    def monitoring_status_for_target(self, target: str) -> str:
+        indexed = self.store.indexed_target(target) or {}
+        for inactive_target in self.config.monitor.inactive_targets:
+            if config_entry_matches_query(inactive_target, target, indexed):
+                return "inactive"
+        return "active"
+
+    def config_entry_account_identity(
+        self,
+        entry: Any,
+        fallback_query: str = "",
+        indexed: dict[str, Any] | None = None,
+    ) -> tuple[str | None, str | None]:
+        indexed = indexed or {}
+        if isinstance(entry, dict):
+            entry_id = entry.get("id") or entry.get("profile_id") or entry.get("user_id")
+            entry_username = normalized_config_username(entry.get("username"))
+        else:
+            entry_id, entry_username = target_identity_parts(entry)
+
+        query_id, query_username = target_identity_parts(fallback_query)
+        profile_id = indexed.get("id") or entry_id or query_id
+        username = indexed.get("username") or entry_username or query_username
+        if username:
+            username = str(username).lstrip("@")
+        return (str(profile_id) if profile_id not in (None, "") else None), username
+
+    def config_entry_line(
+        self,
+        entry: Any,
+        fallback_query: str = "",
+        indexed: dict[str, Any] | None = None,
+    ) -> str:
+        profile_id, username = self.config_entry_account_identity(entry, fallback_query, indexed)
+        display_target = f"@{username}" if username else fallback_query or target_from_config_entry(entry) or profile_id or "unknown"
+        line = target_ref_html(display_target)
+        if profile_id and str(display_target).strip() != str(profile_id):
+            line = f"{line} <code>{html_escape(profile_id)}</code>"
+        return line
+
+    def set_target_enabled(self, query: str, enabled: bool) -> str:
+        query = query.strip()
+        if not query:
+            command = "/enable" if enabled else "/disable"
+            return f"Укажи цель: <code>{command} @username</code> или <code>{command} 123456789</code>"
+        if os.getenv("MONITOR_TARGETS"):
+            return "Сейчас цели переопределены через <code>MONITOR_TARGETS</code>, поэтому config.json не меняю."
+
+        raw = load_json(CONFIG_PATH)
+        monitor_raw = raw.get("monitor")
+        if not isinstance(monitor_raw, dict):
+            raise ConfigError("В config.json нет секции monitor.")
+
+        active_targets, inactive_targets = split_config_target_entries(monitor_raw.get("targets"))
+        source = inactive_targets if enabled else active_targets
+        destination = active_targets if enabled else inactive_targets
+        indexed = self.store.indexed_target(query) or {}
+
+        moved_entry = None
+        for index, entry in enumerate(source):
+            if config_entry_matches_query(entry, query, indexed):
+                moved_entry = source.pop(index)
+                break
+
+        already_title = "уже активна" if enabled else "уже инактивна"
+        if moved_entry is None:
+            for entry in destination:
+                if config_entry_matches_query(entry, query, indexed):
+                    return f"<b>Цель {already_title}</b>\n{self.config_entry_line(entry, query, indexed)}"
+            return f"<b>Цель не найдена в config.json</b>\n<code>{html_escape(query)}</code>\nПроверь <code>/watchlist</code>."
+
+        new_entry = config_entry_for_indexed(moved_entry, query, indexed)
+        destination.append(new_entry)
+        set_config_target_entries(monitor_raw, active_targets, inactive_targets)
+        CONFIG_PATH.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        self.reload_targets_from_config()
+        profile_id, username = self.config_entry_account_identity(new_entry, query, indexed)
+        if profile_id:
+            self.store.move_account_logs(profile_id, username, active=enabled)
+        self.sync_account_log_layout()
+
+        title = "включена" if enabled else "отключена"
+        logging.info("Target %s %s", query, title)
+        return f"<b>Цель {title}</b>\n{self.config_entry_line(new_entry, query, indexed)}"
+
     def startup_text(self) -> str:
         targets = "\n".join(self.startup_target_line(target) for target in self.config.monitor.targets)
+        if not targets:
+            targets = "• нет активных целей"
         return (
             "<b>User Monitor запущен</b>\n"
             f"Интервал: <code>{self.config.monitor.interval_seconds} сек</code>\n"
-            f"Целей: <code>{len(self.config.monitor.targets)}</code>\n\n"
+            f"Активных целей: <code>{len(self.config.monitor.targets)}</code>\n"
+            f"Инактивных целей: <code>{len(self.config.monitor.inactive_targets)}</code>\n\n"
+            "<b>Активный мониторинг</b>\n"
             f"{targets}"
         )
 
@@ -2539,11 +2932,15 @@ class ProfileMonitor:
             if previous is None:
                 self.store.upsert_profile(target, snapshot)
                 sync_config_target(target, snapshot)
+                self.reload_targets_from_config()
+                self.sync_account_log_layout()
+                monitoring_status = self.monitoring_status_for_target(target)
                 self.store.append_event(
                     {
                         "type": "baseline",
                         "target": canonical_target,
                         "configured_target": target if canonical_target != target else None,
+                        "monitoring_status": monitoring_status,
                         "profile_id": profile_id,
                         "username": snapshot["identity"].get("username"),
                         "snapshot": snapshot,
@@ -2563,6 +2960,9 @@ class ProfileMonitor:
             diff = diff_snapshots(previous, snapshot)
             self.store.upsert_profile(target, snapshot)
             sync_config_target(target, snapshot)
+            self.reload_targets_from_config()
+            self.sync_account_log_layout()
+            monitoring_status = self.monitoring_status_for_target(target)
 
             if diff_has_changes(diff):
                 self.store.append_event(
@@ -2570,6 +2970,7 @@ class ProfileMonitor:
                         "type": "change",
                         "target": canonical_target,
                         "configured_target": target if canonical_target != target else None,
+                        "monitoring_status": monitoring_status,
                         "profile_id": profile_id,
                         "username": snapshot["identity"].get("username"),
                         "diff": diff,
@@ -2754,7 +3155,8 @@ class ProfileMonitor:
         lines = [
             "<b>Статус мониторинга</b>",
             f"Состояние: <b>{running}</b>",
-            f"Целей в config: <code>{len(self.config.monitor.targets)}</code>",
+            f"Активных целей: <code>{len(self.config.monitor.targets)}</code>",
+            f"Инактивных целей: <code>{len(self.config.monitor.inactive_targets)}</code>",
             f"Интервал: <code>{self.config.monitor.interval_seconds} сек</code>",
             f"Последний старт: <code>{html_escape(self.last_started_at or 'нет')}</code>",
             f"Последнее завершение: <code>{html_escape(self.last_finished_at or 'нет')}</code>",
@@ -2769,19 +3171,33 @@ class ProfileMonitor:
             lines.append(format_results(self.last_results))
         return "\n".join(lines)
 
+    def watchlist_target_line(self, target: str) -> str:
+        indexed = self.store.indexed_target(target) or {}
+        display = indexed.get("display") or "пока не снят"
+        target_id, target_username = target_identity_parts(target)
+        profile_id = indexed.get("id") or target_id or "нет"
+        username = indexed.get("username") or (target_username.lstrip("@") if target_username else None)
+        display_target = f"@{username}" if username else target
+        profile = self.store.profile(str(profile_id)) if profile_id != "нет" else None
+        plain_name = profile_plain_name(profile)
+        prefix = f"• {html_escape(plain_name)} " if plain_name else "• "
+        return f"{prefix}{target_ref_html(display_target)} -&gt; {html_escape(display)} <code>{html_escape(profile_id)}</code>"
+
     def watchlist_text(self) -> str:
-        lines = ["<b>Цели из config</b>"]
-        for target in self.config.monitor.targets:
-            indexed = self.store.indexed_target(target) or {}
-            display = indexed.get("display") or "пока не снят"
-            target_id, target_username = target_identity_parts(target)
-            profile_id = indexed.get("id") or target_id or "нет"
-            username = indexed.get("username") or (target_username.lstrip("@") if target_username else None)
-            display_target = f"@{username}" if username else target
-            profile = self.store.profile(str(profile_id)) if profile_id != "нет" else None
-            plain_name = profile_plain_name(profile)
-            prefix = f"• {html_escape(plain_name)} " if plain_name else "• "
-            lines.append(f"{prefix}{target_ref_html(display_target)} -&gt; {html_escape(display)} <code>{html_escape(profile_id)}</code>")
+        lines = ["<b>Цели из config</b>", "", "<b>Активные</b>"]
+        if self.config.monitor.targets:
+            for target in self.config.monitor.targets:
+                lines.append(self.watchlist_target_line(target))
+        else:
+            lines.append("• нет")
+
+        lines.append("")
+        lines.append("<b>Инактивные</b>")
+        if self.config.monitor.inactive_targets:
+            for target in self.config.monitor.inactive_targets:
+                lines.append(self.watchlist_target_line(target))
+        else:
+            lines.append("• нет")
 
         profiles = self.store.all_profiles()
         if profiles:
@@ -2842,6 +3258,8 @@ def help_text() -> str:
         "/watchlist - цели и последние снимки\n"
         "/check - проверить все цели сейчас\n"
         "/check @username - разово проверить одну цель\n"
+        "/enable @username_or_id - включить цель в постоянный мониторинг\n"
+        "/disable @username_or_id - выключить цель, оставив ее в config\n"
         "/snapshot @username_or_id - показать последний снимок из state\n\n"
         "Цели для постоянного мониторинга задаются в <code>config.json</code>."
     )
@@ -2888,6 +3306,28 @@ def build_router(monitor: ProfileMonitor, config: AppConfig) -> Router:
             await message.answer("Нет доступа.")
             return
         await message.answer(monitor.watchlist_text(), reply_markup=main_keyboard())
+
+    @router.message(Command("enable", "on"))
+    async def on_enable(message: Message) -> None:
+        if not is_admin(config, message):
+            await message.answer("Нет доступа.")
+            return
+        try:
+            text = monitor.set_target_enabled(command_args(message), True)
+        except ConfigError as exc:
+            text = f"<b>Не удалось изменить config.json</b>\n<code>{html_escape(exc)}</code>"
+        await message.answer(text, reply_markup=main_keyboard())
+
+    @router.message(Command("disable", "off"))
+    async def on_disable(message: Message) -> None:
+        if not is_admin(config, message):
+            await message.answer("Нет доступа.")
+            return
+        try:
+            text = monitor.set_target_enabled(command_args(message), False)
+        except ConfigError as exc:
+            text = f"<b>Не удалось изменить config.json</b>\n<code>{html_escape(exc)}</code>"
+        await message.answer(text, reply_markup=main_keyboard())
 
     @router.message(Command("snapshot"))
     async def on_snapshot(message: Message) -> None:
@@ -2962,6 +3402,8 @@ async def set_bot_commands(bot: Bot) -> None:
             BotCommand(command="status", description="статус мониторинга"),
             BotCommand(command="watchlist", description="цели и снимки"),
             BotCommand(command="check", description="проверить сейчас"),
+            BotCommand(command="enable", description="включить цель"),
+            BotCommand(command="disable", description="выключить цель"),
             BotCommand(command="snapshot", description="последний снимок цели"),
             BotCommand(command="help", description="помощь"),
         ]
