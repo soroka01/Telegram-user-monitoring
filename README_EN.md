@@ -1,81 +1,19 @@
-# 👤 Telegram User Monitor
+# Telegram User Monitor
 
-> A Telethon and aiogram monitor for Telegram profiles with change notifications, local history, and storage of available media.
+[Русский](README.md) · [English](README_EN.md)
 
-🌐 **Language:** [Русский](README.md) · [English](README_EN.md)
+Telegram profile monitor for changes to profile data, photos, music, and visible gifts. Telethon reads data available to the signed-in account; a separate bot notifies administrators and history is stored locally.
 
-![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
-![Telethon](https://img.shields.io/badge/Telethon-user_session-0088CC?logo=telegram&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-Telegram_bot-26A5E4?logo=telegram&logoColor=white)
-![MIT License](https://img.shields.io/badge/License-MIT-2EA44F.svg)
+## Requirements
 
-## ✨ Overview
-
-Telegram User Monitor uses a Telethon user session to read available profile data and a separate Telegram bot for notifications and commands. It stores snapshots, compares them by stable user ID, and informs administrators about changes to profiles, photos, music, and visible gifts.
-
-The project does not bypass Telegram privacy. It sees only the information Telegram exposes to the authorized user account.
-
-## 🚀 Features
-
-- first name, last name, primary username, and additional public usernames;
-- Telegram Premium and regular or collectible emoji status;
-- bio, birthday, note, and common chat count;
-- personal channel and its linked message;
-- business hours, location, intro, greeting, and away settings;
-- profile/name colors, theme, wallpaper, main tab, and profile flags;
-- optional online status;
-- current, profile, personal, and fallback photos;
-- an available photo list with added and removed photo detection;
-- profile music metadata, download, and audio/document delivery;
-- `stargifts_count`, Stars rating, and paid-message price;
-- visible regular and unique gifts through `GetSavedStarGiftsRequest`;
-- sender/recipient, date, message, saved/message IDs, slug, owner, supply, value, and original details;
-- raw TL data in local state and event history;
-- saved `id`/`access_hash` values and automatic synchronization of the current username into config;
-- global and per-account JSONL events;
-- administrator-only Telegram commands and an inline keyboard.
-
-## 🏗️ How It Works
-
-```text
-config.json + authorized Telethon session
-    │
-    ▼
-main.py
-    ├── GetFullUser ───────── profile and business fields
-    ├── GetUserPhotos ─────── profile photos
-    └── GetSavedStarGifts ─── visible gifts
-    │
-    ▼
-normalized snapshot keyed by user ID
-    ├── diff + Telegram bot notifications
-    ├── state/profile_state.json
-    ├── global and per-account JSONL logs
-    └── downloaded photos and profile music
-```
-
-A username is used for initial resolution, while the stable user ID and saved `access_hash` are used for later checks. A username change should therefore not switch monitoring to a different account.
-
-## 📋 Requirements
-
-- Python 3.14 or newer (the latest 3.14.6 patch is recommended);
-- pip 26.1.2, setuptools 84.0.0, and wheel 0.48.0 (the launchers upgrade them automatically);
+- Python 3.14 or newer;
 - a Telegram user account;
 - an `api_id` and `api_hash` from [Telegram API development tools](https://my.telegram.org);
 - a Telegram bot token from [@BotFather](https://t.me/BotFather);
 - the Telegram user ID of each administrator;
 - at least one target visible to the user session.
 
-Main dependencies:
-
-| Package | Purpose |
-| --- | --- |
-| `telethon` | User session and MTProto requests |
-| `aiogram` | Bot API, commands, and media delivery |
-| `qrcode[pil]` | Console QR login |
-| `tzdata` | IANA time zones on systems without a system database |
-
-## ⚙️ Installation and Running
+## Quick start
 
 ### 1. Clone the repository
 
@@ -152,7 +90,16 @@ python login.py
 python main.py
 ```
 
-## 🎯 Monitoring Targets
+## How it works
+
+```mermaid
+flowchart TD
+    A["Telethon user session"] --> B["Profile / photos / music / gifts"]
+    B["Profile / photos / music / gifts"] --> C["Compare by user ID"]
+    C["Compare by user ID"] --> D["Telegram bot + local history"]
+```
+
+## Monitoring Targets
 
 Recommended format:
 
@@ -179,7 +126,7 @@ Other supported forms:
 
 After a successful snapshot, the monitor may rewrite the matching `config.json` entry as an object containing the current `id` and `username`. Additional object keys are preserved. The file is not synchronized when `MONITOR_TARGETS` is used.
 
-## ⚙️ Configuration
+## Configuration
 
 ### Telegram user session
 
@@ -232,7 +179,7 @@ Replace the `123456789` placeholder. It is a syntactically valid Telegram ID.
 
 Environment values take precedence over config.
 
-## 🤖 Telegram Commands
+## Telegram Commands
 
 | Command | Action |
 | --- | --- |
@@ -246,13 +193,13 @@ Environment values take precedence over config.
 
 Users outside `admin_ids` receive an access-denied response.
 
-## ⏱️ Intervals and FloodWait
+## Intervals and FloodWait
 
 By default, the monitor checks targets every 300 seconds and pauses between them. A 60–120 second interval may be reasonable for a small list, but the safe value depends on photo count, gift count, and Telegram API availability.
 
 On `FloodWait`, the monitor waits for at most 60 seconds inside the current check, informs the administrator, and returns to its normal loop. Do not run several copies with one session, and do not lower the interval without a reason.
 
-## 💾 Local Data
+## Local Data
 
 | Path | Contents |
 | --- | --- |
@@ -267,7 +214,7 @@ On `FloodWait`, the monitor waits for at most 60 seconds inside the current chec
 
 The actual session filename depends on `telegram.session_name`.
 
-## 🔐 Security and Privacy
+## Security and Privacy
 
 - Never commit `config.json`, `.env`, `*.session`, or `*.session-journal`.
 - A user session grants access to your Telegram account and needs password-level protection.
@@ -277,7 +224,7 @@ The actual session filename depends on `telegram.session_name`.
 - Revoke leaked bot tokens or API credentials immediately.
 - Use the monitor lawfully and with respect for other people's privacy.
 
-## ⚠️ Limitations
+## Limitations
 
 - A numeric ID without an `access_hash` may not resolve when the entity is absent from contacts, dialogs, and the session cache.
 - Only the first `profile_photo_limit` photos and up to `gift_limit` gifts are compared.
@@ -286,11 +233,7 @@ The actual session filename depends on `telegram.session_name`.
 - Stored `taken_at` uses the configured time zone, while current Telegram event timestamps are formatted in Moscow time.
 - Bot messages and runtime logs are primarily in Russian.
 
-## 🧪 Testing and Troubleshooting
-
-The repository currently has no automated tests or CI. End-to-end verification requires a real user session and the Bot API.
-
-Common problems:
+## Troubleshooting
 
 - **Config error:** check placeholders and JSON syntax.
 - **Session database is locked:** stop the other Python process using the same session file.
@@ -299,10 +242,14 @@ Common problems:
 - **FloodWait:** increase `interval_seconds` and `request_delay_seconds`.
 - **No bot messages:** verify the token, `admin_ids`, and that you have started a chat with the bot.
 
-## 📄 License
+## License
 
-This project is distributed under the [MIT License](LICENSE).
+[MIT](LICENSE).
+
+## Support
+
+Feel free to [fork this repository](https://github.com/soroka01/Telegram-user-monitoring/fork) and adapt it. If it helped you, leave a [Star](https://github.com/soroka01/Telegram-user-monitoring) so I can see it was useful.
 
 ---
 
-Built for responsible personal monitoring without bypassing Telegram privacy.
+with love ❤️

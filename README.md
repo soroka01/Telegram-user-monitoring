@@ -1,81 +1,19 @@
-# 👤 Telegram User Monitor
+# Telegram User Monitor
 
-> Монитор Telegram-профилей на Telethon и aiogram с уведомлениями об изменениях, локальной историей и сохранением доступных медиа.
+[Русский](README.md) · [English](README_EN.md)
 
-🌐 **Язык:** [Русский](README.md) · [English](README_EN.md)
+Монитор Telegram-профилей: изменения данных, фотографий, музыки и видимых подарков. Telethon читает доступные аккаунту сведения, отдельный бот отправляет уведомления администраторам; история сохраняется локально.
 
-![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
-![Telethon](https://img.shields.io/badge/Telethon-user_session-0088CC?logo=telegram&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-Telegram_bot-26A5E4?logo=telegram&logoColor=white)
-![MIT License](https://img.shields.io/badge/License-MIT-2EA44F.svg)
+## Требования
 
-## ✨ Обзор
-
-Telegram User Monitor использует пользовательскую Telethon session для чтения доступных профильных данных и отдельного Telegram-бота для уведомлений и команд. Монитор сохраняет snapshots, сравнивает их по стабильному user ID и сообщает администраторам об изменениях профиля, аватарок, музыки и видимых подарков.
-
-Проект не обходит приватность Telegram. Он видит только те сведения, которые Telegram показывает авторизованному пользовательскому аккаунту.
-
-## 🚀 Возможности
-
-- имя, фамилия, основной и дополнительные публичные username;
-- Telegram Premium и обычный или collectible emoji status;
-- bio, birthday, note и common chats count;
-- personal channel и связанное сообщение;
-- business hours, location, intro, greeting и away settings;
-- profile/name colors, theme, wallpaper, main tab и profile flags;
-- опциональный online status;
-- current, profile, personal и fallback photo;
-- список доступных аватарок с обнаружением добавления и удаления;
-- profile music: metadata, скачивание и отправка audio/document;
-- `stargifts_count`, Stars rating и paid-message price;
-- видимые обычные и unique gifts через `GetSavedStarGiftsRequest`;
-- sender/recipient, date, message, saved/message IDs, slug, owner, supply, value и original details;
-- raw TL data в локальном state и event history;
-- сохранение `id`/`access_hash` и автоматическая синхронизация актуального username в config;
-- глобальные и отдельные per-account JSONL events;
-- admin-only Telegram-команды и inline keyboard.
-
-## 🏗️ Как это работает
-
-```text
-config.json + authorized Telethon session
-    │
-    ▼
-main.py
-    ├── GetFullUser ───────── profile and business fields
-    ├── GetUserPhotos ─────── profile photos
-    └── GetSavedStarGifts ─── visible gifts
-    │
-    ▼
-normalized snapshot keyed by user ID
-    ├── diff + Telegram bot notifications
-    ├── state/profile_state.json
-    ├── global and per-account JSONL logs
-    └── downloaded photos and profile music
-```
-
-Username используется для первого resolution, а стабильный user ID и сохранённый `access_hash` — для последующих проверок. Поэтому смена username не должна переключить монитор на другой аккаунт.
-
-## 📋 Требования
-
-- Python 3.14 или новее (рекомендуется актуальный патч 3.14.6);
-- pip 26.1.2, setuptools 84.0.0 и wheel 0.48.0 (launcher обновляет их автоматически);
+- Python 3.14 или новее;
 - пользовательский Telegram-аккаунт;
 - `api_id` и `api_hash` из [Telegram API development tools](https://my.telegram.org);
 - Telegram bot token от [@BotFather](https://t.me/BotFather);
-- Telegram user ID каждого администратора;
+- Telegram ID каждого администратора;
 - хотя бы одна доступная цель мониторинга.
 
-Основные зависимости:
-
-| Пакет | Назначение |
-| --- | --- |
-| `telethon` | User session и MTProto requests |
-| `aiogram` | Bot API, команды и отправка media |
-| `qrcode[pil]` | QR login в консоли |
-| `tzdata` | IANA timezones на системах без системной базы |
-
-## ⚙️ Установка и запуск
+## Быстрый старт
 
 ### 1. Клонируйте репозиторий
 
@@ -152,7 +90,16 @@ python login.py
 python main.py
 ```
 
-## 🎯 Цели мониторинга
+## Как это работает
+
+```mermaid
+flowchart TD
+    A["Telethon user session"] --> B["Profile / photos / music / gifts"]
+    B["Profile / photos / music / gifts"] --> C["Compare by user ID"]
+    C["Compare by user ID"] --> D["Telegram bot + local history"]
+```
+
+## Цели мониторинга
 
 Рекомендуемый формат:
 
@@ -187,9 +134,9 @@ python main.py
 
 После первого успешного снимка монитор сохраняет `id/access_hash` и дальше старается следить за тем же аккаунтом, даже если username сменился. Также он сам обновляет `monitor.targets` в `config.json` до актуальных `id` и `@username`, если цель была указана старым username или голым id.
 
-## ⚙️ Конфигурация
+## Настройки
 
-### Telegram user session
+### Telegram-аккаунт
 
 | Поле | По умолчанию | Назначение |
 | --- | ---: | --- |
@@ -200,16 +147,16 @@ python main.py
 | `telegram.qr_login_attempts` | `10` | Максимальное число обновлений QR |
 | `telegram.qr_login_timeout_seconds` | `55` | Время жизни одной QR-попытки; минимум 15 секунд |
 
-### Bot
+### Бот
 
 | Поле | Назначение |
 | --- | --- |
 | `bot.token` | Bot token от BotFather |
 | `bot.admin_ids` | Список пользователей, получающих alerts и имеющих доступ к командам |
 
-Обязательно замените placeholder `123456789`: он является синтаксически допустимым Telegram ID.
+Обязательно замените пример `123456789`: он является синтаксически допустимым Telegram ID.
 
-### Monitor
+### Монитор
 
 | Поле | По умолчанию | Назначение |
 | --- | ---: | --- |
@@ -222,7 +169,7 @@ python main.py
 | `send_photos` | `true` | Скачивать и отправлять новые аватарки |
 | `notify_initial_snapshot` | `true` | Отправлять baseline и доступную profile music |
 | `track_online_status` | `false` | Добавлять volatile online status в сравнение |
-| `timezone` | `Asia/Yekaterinburg` | Timezone, используемая в `taken_at` snapshot |
+| `timezone` | `Asia/Yekaterinburg` | Часовой пояс, используемая в `taken_at` snapshot |
 | `state_path` | `state/profile_state.json` | Путь к state |
 | `events_path` | `logs/profile_events.jsonl` | Путь к JSONL history |
 | `media_dir` | `media` | Каталог скачанных фото и музыки |
@@ -235,16 +182,16 @@ python main.py
 | `TG_API_HASH` | `telegram.api_hash` |
 | `TG_PHONE` | `telegram.phone` |
 | `BOT_TOKEN` | `bot.token` |
-| `ADMIN_IDS` | `bot.admin_ids`, comma-separated |
-| `MONITOR_TARGETS` | `monitor.targets`, comma-separated |
+| `ADMIN_IDS` | `bot.admin_ids`, через запятую |
+| `MONITOR_TARGETS` | `monitor.targets`, через запятую |
 
 Environment values имеют приоритет над config.
 
-## 🤖 Команды Telegram
+## Команды Telegram
 
 | Команда | Действие |
 | --- | --- |
-| `/start` | Справка и inline keyboard |
+| `/start` | Справка и кнопки |
 | `/help` | Справка |
 | `/status` | Состояние цикла, paths и последний результат |
 | `/watchlist` | Configured targets и сохранённые snapshots |
@@ -256,13 +203,13 @@ Environment values имеют приоритет над config.
 
 Пользователи вне `admin_ids` получают отказ в доступе.
 
-## ⏱️ Интервалы и FloodWait
+## Интервалы и FloodWait
 
 По умолчанию монитор проверяет цели раз в 300 секунд и делает паузу между ними. Частота 60–120 секунд может быть приемлемой для небольшого списка, но итоговый безопасный интервал зависит от числа фотографий, подарков и доступности Telegram API.
 
 При `FloodWait` монитор ждёт не более 60 секунд внутри текущей проверки, уведомляет администратора и возвращается к обычному циклу. Не запускайте несколько копий с одной session и не уменьшайте интервал без необходимости.
 
-## 💾 Локальные данные
+## Локальные данные
 
 | Путь | Содержимое |
 | --- | --- |
@@ -272,48 +219,48 @@ Environment values имеют приоритет над config.
 | `logs/profile_events.jsonl` | Глобальная baseline/change/error history с полным JSON |
 | `logs/accounts/active/<id_username>/profile_events.jsonl` | История активного аккаунта |
 | `logs/accounts/inactive/<id_username>/profile_events.jsonl` | История отключённого аккаунта |
-| `logs/monitor.log` | Технический runtime log |
+| `logs/monitor.log` | Технический журнал |
 | `media/<user_id>/` | Скачанные новые аватарки |
 | `media/<user_id>/music/` | Скачанная profile music |
 
 Фактическое имя session зависит от `telegram.session_name`.
 
-## 🔐 Безопасность и приватность
+## Безопасность и приватность
 
 - Никогда не коммитьте `config.json`, `.env`, `*.session` или `*.session-journal`.
 - User session даёт доступ вашему Telegram-аккаунту и требует парольного уровня защиты.
-- State и events содержат raw profile, chat и gift data, доступные этой session.
+- State и events содержат исходные данные профиля, chat и gift data, доступные этой session.
 - Media может содержать удалённые позднее аватарки и музыку.
 - Укажите только собственный admin ID и проверяйте получателя до первого запуска.
 - После утечки bot token или API credentials немедленно отзовите их.
 - Используйте монитор только законно и с уважением к приватности людей.
 
-## ⚠️ Ограничения
+## Ограничения
 
-- Числовой ID без `access_hash` может не разрешиться, если entity отсутствует в contacts, dialogs или session cache.
+- Числовой ID без `access_hash` может не разрешиться, если entity отсутствует в контактах, диалогах или кэше сессии.
 - Сравниваются только первые `profile_photo_limit` аватарок и до `gift_limit` подарков.
 - `exclude_unsaved = true` означает, что скрытые пользователем подарки не входят в видимый список.
-- Часть новых Telegram fields зависит от установленной версии Telethon и доступности API layer.
-- Stored `taken_at` использует config timezone, но текущие Telegram event timestamps форматируются в МСК.
-- Bot messages и runtime logs преимущественно русскоязычные.
+- Часть новых поля Telegram зависит от установленной версии Telethon и доступности API layer.
+- Сохранённое `taken_at` использует часовой пояс из настроек, но текущие время событий Telegram форматируются в МСК.
+- Сообщения бота и журналы преимущественно русскоязычные.
 
-## 🧪 Проверка и диагностика
+## Решение проблем
 
-В репозитории пока нет автоматических тестов и CI. Полноценная проверка требует реальной user session и Bot API.
-
-Частые проблемы:
-
-- **Config error:** проверьте placeholders и JSON syntax.
+- **Config error:** проверьте примеры и JSON syntax.
 - **Session database is locked:** остановите другой Python-процесс с тем же session-файлом.
 - **Код не приходит:** проверьте официальный чат Telegram или используйте QR login.
 - **Target not found:** используйте `@username`, прогрейте entity в session либо укажите `id:access_hash`.
 - **FloodWait:** увеличьте `interval_seconds` и `request_delay_seconds`.
 - **Bot не пишет:** проверьте token, `admin_ids` и начат ли диалог с ботом.
 
-## 📄 Лицензия
+## Лицензия
 
-Проект распространяется по лицензии [MIT](LICENSE).
+[MIT](LICENSE).
+
+## Поддержка
+
+Можно [форкнуть репозиторий](https://github.com/soroka01/Telegram-user-monitoring/fork) и доработать под себя. Если проект пригодился, поставьте [Star](https://github.com/soroka01/Telegram-user-monitoring) — так я увижу, что он был кому-то полезен.
 
 ---
 
-Сделано для ответственного личного мониторинга без обхода приватности Telegram.
+with love ❤️
