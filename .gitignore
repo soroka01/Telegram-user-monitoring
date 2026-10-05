@@ -1,15 +1,17 @@
-config.json
-.env
-*.session
-*.bak
-*.session-journal
+# Python
+__pycache__/
+*.py[cod]
 .venv/
-venv/
-env/
+.env
+
+# Config and runtime data
+config.json
+profile_state.json
 state/
 logs/
 media/
-__pycache__/
-*.pyc
-profile_state.json
-/media/*
+*.bak
+
+# Telegram sessions
+*.session
+*.session-journal
